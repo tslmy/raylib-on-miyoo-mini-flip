@@ -2,6 +2,8 @@
 
 A tiny [Raylib][rl] 3D demo (spinning cube) for [Miyoo Mini Flip (MMF)][mm] running OnionOS.
 
+<img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
+
 This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
 
 - Docker-based armv7 toolchain
