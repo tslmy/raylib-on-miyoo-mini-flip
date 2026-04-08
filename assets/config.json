@@ -1,0 +1,6 @@
+{
+  "label": "Raylib Cube",
+  "icon": "icon.png",
+  "launch": "launch.sh",
+  "description": "Simple 3D spinning cube demo"
+}
