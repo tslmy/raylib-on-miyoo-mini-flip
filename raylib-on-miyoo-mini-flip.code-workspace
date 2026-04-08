@@ -1,0 +1,11 @@
+{
+  "folders": [
+	{
+		"path": "."
+	},
+	{
+		"path": "../mini_toolchain-v1.0"
+	}
+],
+  "settings": {}
+}
