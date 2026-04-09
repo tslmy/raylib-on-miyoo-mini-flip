@@ -1,8 +1,8 @@
-# Porting Raylib to Miyoo Mini Flip
+# Raylib + Bullet3 on Miyoo Mini Flip
 
 A tiny [Raylib][rl] 3D demo for [Miyoo Mini Flip (MMF)][mm] running OnionOS — a cube free-falls with [Bullet3][bt] rigid body physics, bouncing off a floor plane.
 
-<img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
+![demo](https://github.com/user-attachments/assets/6271ccba-de3f-450d-8478-33217ffe0ceb)
 
 This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
 
