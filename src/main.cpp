@@ -243,9 +243,8 @@ static const Color PASTEL2[] = {
     {230, 245, 201, 255},  // lime
     {255, 242, 174, 255},  // butter
     {241, 226, 204, 255},  // tan
-    {204, 204, 204, 255},  // silver
 };
-#define NUM_PASTEL2 8
+#define NUM_PASTEL2 7
 
 // ═══════════════════════════════════════════════════════════════════
 // Active dice state
@@ -453,7 +452,7 @@ static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f}
 static const Color GROUND_COLOR = {140, 100, 58, 255};
 
 // Draw a dark blob shadow on the ground plane beneath a die.
-// Uses two concentric quads for a subtle soft-edge effect.
+// Uses concentric circle rings (triangle fans) for a soft circular edge.
 static void DrawBlobShadow(float px, float py, float pz) {
     const float groundY = 0.002f;
     float height = (py > 0) ? py : 0;
@@ -472,28 +471,25 @@ static void DrawBlobShadow(float px, float py, float pz) {
     Color inner = shadowCol(0.7f);
     Color outer = shadowCol(0.25f);
 
-    // Inner quad (darker core)
-    DrawTriangle3D({px-r_inner, groundY, pz-r_inner}, {px+r_inner, groundY, pz-r_inner},
-                   {px+r_inner, groundY, pz+r_inner}, inner);
-    DrawTriangle3D({px-r_inner, groundY, pz-r_inner}, {px+r_inner, groundY, pz+r_inner},
-                   {px-r_inner, groundY, pz+r_inner}, inner);
-    // Outer ring (lighter penumbra) — 4 side strips
-    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px+r_outer, groundY, pz-r_outer},
-                   {px+r_inner, groundY, pz-r_inner}, outer);
-    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px+r_inner, groundY, pz-r_inner},
-                   {px-r_inner, groundY, pz-r_inner}, outer);
-    DrawTriangle3D({px+r_inner, groundY, pz-r_inner}, {px+r_outer, groundY, pz-r_outer},
-                   {px+r_outer, groundY, pz+r_outer}, outer);
-    DrawTriangle3D({px+r_inner, groundY, pz-r_inner}, {px+r_outer, groundY, pz+r_outer},
-                   {px+r_inner, groundY, pz+r_inner}, outer);
-    DrawTriangle3D({px-r_inner, groundY, pz+r_inner}, {px+r_inner, groundY, pz+r_inner},
-                   {px+r_outer, groundY, pz+r_outer}, outer);
-    DrawTriangle3D({px-r_inner, groundY, pz+r_inner}, {px+r_outer, groundY, pz+r_outer},
-                   {px-r_outer, groundY, pz+r_outer}, outer);
-    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px-r_inner, groundY, pz-r_inner},
-                   {px-r_inner, groundY, pz+r_inner}, outer);
-    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px-r_inner, groundY, pz+r_inner},
-                   {px-r_outer, groundY, pz+r_outer}, outer);
+    const int SEGS = 12;
+    for (int i = 0; i < SEGS; i++) {
+        float a0 = (float)i / SEGS * 2.0f * PI;
+        float a1 = (float)(i + 1) / SEGS * 2.0f * PI;
+        float c0 = cosf(a0), s0 = sinf(a0);
+        float c1 = cosf(a1), s1 = sinf(a1);
+
+        // Inner disk (darker core)
+        DrawTriangle3D({px, groundY, pz},
+                       {px + c0 * r_inner, groundY, pz + s0 * r_inner},
+                       {px + c1 * r_inner, groundY, pz + s1 * r_inner}, inner);
+        // Outer ring (lighter penumbra)
+        DrawTriangle3D({px + c0 * r_inner, groundY, pz + s0 * r_inner},
+                       {px + c0 * r_outer, groundY, pz + s0 * r_outer},
+                       {px + c1 * r_outer, groundY, pz + s1 * r_outer}, outer);
+        DrawTriangle3D({px + c0 * r_inner, groundY, pz + s0 * r_inner},
+                       {px + c1 * r_outer, groundY, pz + s1 * r_outer},
+                       {px + c1 * r_inner, groundY, pz + s1 * r_inner}, outer);
+    }
 }
 
 // Draw lit die face triangles (opaque)
@@ -526,7 +522,7 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         if (spec < 0) spec = 0;
         spec = spec * spec * spec * spec;
 
-        float diffuse = 0.3f + 0.5f * key + 0.2f * fill;
+        float diffuse = 0.45f + 0.40f * key + 0.15f * fill;
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
 
         float sr = base.r * diffuse * dimFactor + 255.0f * spec * 0.6f;
@@ -535,12 +531,12 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 
         // Fake environment tint: sky (top) vs ground (bottom) based on normal.y
         float envUp = n.y * 0.5f + 0.5f;  // remap -1..1 → 0..1
-        float envR = 70.0f * envUp + 55.0f * (1.0f - envUp);  // sky blue-gray ↔ warm brown
-        float envG = 75.0f * envUp + 40.0f * (1.0f - envUp);
-        float envB = 95.0f * envUp + 30.0f * (1.0f - envUp);
-        sr = sr * 0.75f + envR * 0.25f;
-        sg = sg * 0.75f + envG * 0.25f;
-        sb = sb * 0.75f + envB * 0.25f;
+        float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);  // sky ↔ warm ground
+        float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
+        float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
+        sr = sr * 0.85f + envR * 0.15f;
+        sg = sg * 0.85f + envG * 0.15f;
+        sb = sb * 0.85f + envB * 0.15f;
 
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
@@ -935,11 +931,7 @@ int main(int argc, char **argv) {
 
         // ── Draw 3D ──
         BeginDrawing();
-        ClearBackground(BLACK);
-        // Vertical gradient sky: warm dark bottom → cooler blue-gray top
-        DrawRectangleGradientV(0, 0, SCR_W, SCR_H,
-                               {50, 58, 78, 255},   // top: dim blue-gray
-                               {22, 20, 18, 255});   // bottom: warm dark
+        ClearBackground({20, 18, 16, 255});  // dark warm gap fill (matches skybox bottom)
 
         BeginMode3D(camera);
         rlDisableBackfaceCulling();  // Ground, shadows, and dice all need both faces
@@ -947,7 +939,7 @@ int main(int argc, char **argv) {
         // Skybox: draw equirectangular panorama on cylinder (depth write off)
         DrawSkybox(camera.position);
 
-        // Opaque geometry first: textured wood floor and grid
+        // Opaque geometry first: textured wood floor
         DrawTexturedGround(10.0f, 4.0f);  // 4×4 tile repeats
 
         // Blob shadows under each die (drawn on ground, before dice)
@@ -955,8 +947,6 @@ int main(int argc, char **argv) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawBlobShadow(xf.m12, xf.m13, xf.m14);
         }
-
-        DrawGrid(20, 1.0f);
 
         // Draw opaque dice faces with lighting
         for (int i = 0; i < numDice; i++) {
