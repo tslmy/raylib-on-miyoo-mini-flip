@@ -175,10 +175,17 @@ int main(void) {
         };
         camera.target = (Vector3){ 0.0f, 1.0f, 0.0f };
 
-        // Get cube transform from Bullet
-        float btMat[16];
-        cubeBody->getWorldTransform().getOpenGLMatrix(btMat);
-        Matrix cubeTransform = *(Matrix*)btMat;
+        // Get cube transform from Bullet (column-major float[16])
+        float m[16];
+        cubeBody->getWorldTransform().getOpenGLMatrix(m);
+        // Raylib's Matrix struct is {m0,m4,m8,m12, m1,m5,m9,m13, ...}
+        // in memory — NOT sequential. Must map by field name, not cast.
+        Matrix cubeTransform = {
+            m[0], m[4], m[8],  m[12],
+            m[1], m[5], m[9],  m[13],
+            m[2], m[6], m[10], m[14],
+            m[3], m[7], m[11], m[15],
+        };
 
         BeginDrawing();
         ClearBackground((Color){ 20, 24, 30, 255 });
