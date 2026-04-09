@@ -273,6 +273,11 @@ static int numDice = 0;
 static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
 static int hotbarSel = 1;
 
+// Debounce for X/Y buttons — ignore repeat presses for N frames
+static const int DEBOUNCE_FRAMES = 12;  // ~0.4s at 30 FPS
+static int debounceY = 0;
+static int debounceX = 0;
+
 // ═══════════════════════════════════════════════════════════════════
 // Bullet3 physics
 // ═══════════════════════════════════════════════════════════════════
@@ -438,7 +443,9 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 // 3D Rendering
 // ═══════════════════════════════════════════════════════════════════
 
-static const Vector3 LIGHT_DIR = Vector3Normalize((Vector3){0.3f, 0.6f, -0.7f});
+// Two-light setup: key light from upper-right-front, fill from left
+static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
+static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
 static void DrawOneDie(const ActiveDie& d, const Matrix& xform) {
     Vector3 wv[MAX_DIE_VERTS];
@@ -450,9 +457,12 @@ static void DrawOneDie(const ActiveDie& d, const Matrix& xform) {
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
         Vector3 n = FaceNormal(wv, face);
-        float ndotl = Vector3DotProduct(n, LIGHT_DIR);
-        if (ndotl < 0) ndotl = 0;
-        float intensity = 0.3f + 0.7f * ndotl;
+        float key  = Vector3DotProduct(n, LIGHT_KEY);
+        if (key < 0) key = 0;
+        float fill = Vector3DotProduct(n, LIGHT_FILL);
+        if (fill < 0) fill = 0;
+        float intensity = 0.45f + 0.45f * key + 0.2f * fill;
+        if (intensity > 1.0f) intensity = 1.0f;
 
         Color col;
         if (face.value >= 0) {
@@ -607,14 +617,20 @@ int main(void) {
         if (IsKeyPressed(MMF_L2)) hotbarSel = (hotbarSel + NUM_DICE_TYPES - 1) % NUM_DICE_TYPES;
         if (IsKeyPressed(MMF_R2)) hotbarSel = (hotbarSel + 1) % NUM_DICE_TYPES;
 
-        if (IsKeyPressed(MMF_Y)) {
+        // Debounce countdowns
+        if (debounceY > 0) debounceY--;
+        if (debounceX > 0) debounceX--;
+
+        if (IsKeyPressed(MMF_Y) && debounceY == 0) {
             int total = 0;
             for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
             if (total < MAX_ACTIVE_DICE && hotbarCount[hotbarSel] < 6)
                 hotbarCount[hotbarSel]++;
+            debounceY = DEBOUNCE_FRAMES;
         }
-        if (IsKeyPressed(MMF_X)) {
+        if (IsKeyPressed(MMF_X) && debounceX == 0) {
             if (hotbarCount[hotbarSel] > 0) hotbarCount[hotbarSel]--;
+            debounceX = DEBOUNCE_FRAMES;
         }
 
         // Throw all configured dice
