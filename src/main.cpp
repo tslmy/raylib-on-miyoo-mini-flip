@@ -889,6 +889,7 @@ int main(int argc, char **argv) {
                                {22, 20, 18, 255});   // bottom: warm dark
 
         BeginMode3D(camera);
+        rlDisableBackfaceCulling();  // Ground, shadows, and dice all need both faces
 
         // Opaque geometry first: textured wood floor and grid
         DrawTexturedGround(10.0f, 4.0f);  // 4×4 tile repeats
@@ -902,7 +903,6 @@ int main(int argc, char **argv) {
         DrawGrid(20, 1.0f);
 
         // Draw opaque dice faces with lighting
-        rlDisableBackfaceCulling();
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawDieFacesLit(dice[i], xf, camera.position);
