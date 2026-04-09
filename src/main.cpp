@@ -545,34 +545,52 @@ static void FlushSortedTris(Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Face number projection (2D overlay)
+// Face number texture atlas (3D decals on face surfaces)
 // ═══════════════════════════════════════════════════════════════════
 
-static Matrix cachedMVP;
+// Atlas layout: 4 columns × 6 rows in 256×256 texture
+// Numbers 0-20 each get a 64×42 cell
+#define ATLAS_COLS 4
+#define ATLAS_ROWS 6
+#define ATLAS_CELL_W 64
+#define ATLAS_CELL_H 42
+#define ATLAS_SIZE 256
 
-static void CacheMVP(Camera3D cam) {
-    Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
-    Matrix proj = MatrixPerspective(cam.fovy * DEG2RAD, (float)SCR_W / SCR_H, 0.01f, 1000.0f);
-    cachedMVP = MatrixMultiply(view, proj);
+static Texture2D numberAtlas;
+
+static void InitNumberAtlas() {
+    Image img = GenImageColor(ATLAS_SIZE, ATLAS_SIZE, BLANK);
+    for (int n = 0; n <= 20; n++) {
+        int col = n % ATLAS_COLS, row = n / ATLAS_COLS;
+        int cx = col * ATLAS_CELL_W, cy = row * ATLAS_CELL_H;
+        char buf[4];
+        snprintf(buf, sizeof(buf), "%d", n);
+        int fontSize = 28;
+        int tw = MeasureText(buf, fontSize);
+        // Fake bold: draw 3 times with offset
+        Color numCol = {30, 20, 40, 255};
+        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2 + 1,
+                      cy + (ATLAS_CELL_H - fontSize)/2, fontSize, numCol);
+        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2,
+                      cy + (ATLAS_CELL_H - fontSize)/2 + 1, fontSize, numCol);
+        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2,
+                      cy + (ATLAS_CELL_H - fontSize)/2, fontSize, numCol);
+    }
+    numberAtlas = LoadTextureFromImage(img);
+    UnloadImage(img);
 }
 
-static Vector2 Project3D(Vector3 pos) {
-    float x = pos.x, y = pos.y, z = pos.z;
-    float cx = cachedMVP.m0*x + cachedMVP.m4*y + cachedMVP.m8*z  + cachedMVP.m12;
-    float cy = cachedMVP.m1*x + cachedMVP.m5*y + cachedMVP.m9*z  + cachedMVP.m13;
-    float cw = cachedMVP.m3*x + cachedMVP.m7*y + cachedMVP.m11*z + cachedMVP.m15;
-    if (cw < 0.001f) return {-1000, -1000};
-    return {(cx/cw + 1.0f) * 0.5f * SCR_W, (1.0f - cy/cw) * 0.5f * SCR_H};
+// Compute UV rectangle for a given face value (0-20)
+static void GetNumberUV(int value, float* u0, float* v0, float* u1, float* v1) {
+    int col = value % ATLAS_COLS, row = value / ATLAS_COLS;
+    *u0 = (float)(col * ATLAS_CELL_W) / ATLAS_SIZE;
+    *v0 = (float)(row * ATLAS_CELL_H) / ATLAS_SIZE;
+    *u1 = (float)((col + 1) * ATLAS_CELL_W) / ATLAS_SIZE;
+    *v1 = (float)((row + 1) * ATLAS_CELL_H) / ATLAS_SIZE;
 }
 
-// Fake bold: draw text with slight offset for weight
-static void DrawTextBold(const char* text, int x, int y, int sz, Color col) {
-    DrawText(text, x+1, y, sz, col);
-    DrawText(text, x, y+1, sz, col);
-    DrawText(text, x, y, sz, col);
-}
-
-static void DrawDieFaceNumbers(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
+// Draw number decals on all visible faces of a die (call inside BeginMode3D)
+static void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
@@ -581,25 +599,67 @@ static void DrawDieFaceNumbers(const ActiveDie& d, const Matrix& xform, Vector3 
         if (d.faces[f].value < 0) continue;
         const Face& face = d.faces[f];
 
+        // Face center
         Vector3 center = {0, 0, 0};
         for (int i = 0; i < face.count; i++)
             center = Vector3Add(center, wv[face.idx[i]]);
         center = Vector3Scale(center, 1.0f / face.count);
 
+        // Back-face cull: skip faces pointing away from camera
         Vector3 n = FaceNormal(wv, face);
         Vector3 toCamera = Vector3Normalize(Vector3Subtract(camPos, center));
-        if (Vector3DotProduct(n, toCamera) < 0.15f) continue;
+        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
 
-        Vector2 sp = Project3D(center);
-        if (sp.x < 0 || sp.x > SCR_W || sp.y < 0 || sp.y > SCR_H) continue;
+        // Compute tangent frame on the face plane
+        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
+        Vector3 t1 = Vector3Normalize(edge);
+        Vector3 t2 = Vector3Normalize(Vector3CrossProduct(n, t1));
 
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%d", face.value);
-        int fontSize = 22;
-        int tw = MeasureText(buf, fontSize);
-        DrawTextBold(buf, (int)sp.x - tw/2, (int)sp.y - fontSize/2,
-                     fontSize, (Color){20, 20, 30, 255});
+        // Quad size: proportional to face size (use shortest edge * 0.55)
+        float minEdge = 1e9f;
+        for (int i = 0; i < face.count; i++) {
+            Vector3 e = Vector3Subtract(wv[face.idx[(i+1) % face.count]], wv[face.idx[i]]);
+            float len = Vector3Length(e);
+            if (len < minEdge) minEdge = len;
+        }
+        float halfSize = minEdge * 0.35f;
+
+        // Offset slightly along normal to prevent z-fighting
+        Vector3 off = Vector3Scale(n, 0.005f);
+        Vector3 qCenter = Vector3Add(center, off);
+
+        // Quad corners: TL, TR, BR, BL
+        Vector3 q0 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)), Vector3Scale(t2,  halfSize));
+        Vector3 q1 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)), Vector3Scale(t2,  halfSize));
+        Vector3 q2 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)), Vector3Scale(t2, -halfSize));
+        Vector3 q3 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)), Vector3Scale(t2, -halfSize));
+
+        // UV coords for this face's number
+        float u0, v0, u1, v1;
+        GetNumberUV(face.value, &u0, &v0, &u1, &v1);
+
+        // Draw textured quad (two triangles) with alpha blending
+        rlSetTexture(numberAtlas.id);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(255, 255, 255, 255);
+            // Triangle 1: q0-q1-q2
+            rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(u1, v0); rlVertex3f(q1.x, q1.y, q1.z);
+            rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
+            // Triangle 2: q0-q2-q3
+            rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
+            rlTexCoord2f(u0, v1); rlVertex3f(q3.x, q3.y, q3.z);
+        rlEnd();
+        rlSetTexture(0);
     }
+}
+
+// Fake bold: draw text with slight offset for weight
+static void DrawTextBold(const char* text, int x, int y, int sz, Color col) {
+    DrawText(text, x+1, y, sz, col);
+    DrawText(text, x, y+1, sz, col);
+    DrawText(text, x, y, sz, col);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -652,6 +712,7 @@ int main(void) {
     InitWindow(SCR_W, SCR_H, "Dice Roller - MMF");
     SetTargetFPS(30);
 
+    InitNumberAtlas();
     InitPhysics();
     ThrowAll();
 
@@ -761,16 +822,17 @@ int main(void) {
             CollectDieTris(dice[i], xf, camera.position);
         }
         FlushSortedTris(camera.position);
+
+        // Draw face number decals on the die surfaces (3D, with blending)
+        BeginBlendMode(BLEND_ALPHA);
+        for (int i = 0; i < numDice; i++) {
+            Matrix xf = GetDieTransform(dice[i]);
+            DrawDieNumberDecals(dice[i], xf, camera.position);
+        }
+        EndBlendMode();
         rlEnableBackfaceCulling();
 
         EndMode3D();
-
-        // ── Face numbers (2D overlay) ──
-        CacheMVP(camera);
-        for (int i = 0; i < numDice; i++) {
-            Matrix xf = GetDieTransform(dice[i]);
-            DrawDieFaceNumbers(dice[i], xf, camera.position);
-        }
 
         // ── Result display ──
         if (allSettled && numDice > 0) {
@@ -795,6 +857,7 @@ int main(void) {
         EndDrawing();
     }
 
+    UnloadTexture(numberAtlas);
     CleanupPhysics();
     CloseWindow();
     return 0;
