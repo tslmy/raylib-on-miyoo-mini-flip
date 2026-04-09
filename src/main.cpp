@@ -614,7 +614,7 @@ static Texture2D skyboxTex;
 static bool skyboxLoaded = false;
 
 static void InitSkybox() {
-    Image img = LoadImage("skybox.jpg");
+    Image img = LoadImage("skybox.png");
     if (img.data != NULL) {
         skyboxTex = LoadTextureFromImage(img);
         UnloadImage(img);
