@@ -534,12 +534,12 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 
         // Fake environment tint: sky (top) vs ground (bottom) based on normal.y
         float envUp = n.y * 0.5f + 0.5f;  // remap -1..1 → 0..1
-        float envR = 50.0f * envUp + 45.0f * (1.0f - envUp);  // sky blue-gray ↔ warm brown
-        float envG = 58.0f * envUp + 35.0f * (1.0f - envUp);
-        float envB = 78.0f * envUp + 25.0f * (1.0f - envUp);
-        sr = sr * 0.85f + envR * 0.15f;
-        sg = sg * 0.85f + envG * 0.15f;
-        sb = sb * 0.85f + envB * 0.15f;
+        float envR = 70.0f * envUp + 55.0f * (1.0f - envUp);  // sky blue-gray ↔ warm brown
+        float envG = 75.0f * envUp + 40.0f * (1.0f - envUp);
+        float envB = 95.0f * envUp + 30.0f * (1.0f - envUp);
+        sr = sr * 0.75f + envR * 0.25f;
+        sg = sg * 0.75f + envG * 0.25f;
+        sb = sb * 0.75f + envB * 0.25f;
 
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
