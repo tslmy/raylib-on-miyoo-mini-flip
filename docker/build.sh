@@ -114,7 +114,7 @@ cp -f "$ASSETS_DIR/config.json" "$OUT_DIR/config.json"
 test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.png"
 
 # Bundle skybox image for 3D environment.
-test -f "$ASSETS_DIR/skybox.jpg" && cp -f "$ASSETS_DIR/skybox.jpg" "$OUT_DIR/skybox.jpg"
+test -f "$ASSETS_DIR/skybox.png" && cp -f "$ASSETS_DIR/skybox.png" "$OUT_DIR/skybox.png"
 
 # Bundle MI GFX libs when available (for hardware blit on MMF).
 if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
