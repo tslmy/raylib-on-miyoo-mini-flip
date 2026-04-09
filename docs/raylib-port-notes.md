@@ -6,7 +6,7 @@ These notes capture what we tried and learned while porting raylib to Miyoo Mini
 
 - **EGL/GLES path failed** on MMF (EGL init and GL context creation failed).
 - **SDL2 path failed** (no working GL context with the MMF SDL2 driver).
-- **Framebuffer + software renderer works**: raylib `PLATFORM_MEMORY` + `GRAPHICS_API_OPENGL_SOFTWARE` and direct `/dev/fb0` blit.
+- **Framebuffer + TinyGL works**: raylib `PLATFORM_MEMORY` + `GRAPHICS_API_OPENGL_11` with [TinyGL](https://github.com/jserv/tinygl) (software OpenGL 1.1 rasterizer), MI GFX hardware blit to `/dev/fb0`.
 
 ## Platform Facts Observed
 
@@ -96,18 +96,23 @@ This was triggered by running the binary without the MMF sysroot in the link pat
 
 ## Working Path (Final)
 
-We switched to raylib’s **software renderer** and **memory platform**:
+We use raylib’s **memory platform** with **TinyGL** as the OpenGL 1.1 software rasterizer:
 
 - `PLATFORM_MEMORY`
-- `GRAPHICS_API_OPENGL_SOFTWARE`
+- `GRAPHICS_API_OPENGL_11`
+- [TinyGL](https://github.com/jserv/tinygl) (jserv fork) — fast integer/fixed-point OpenGL 1.1 implementation
+
+We initially tried raylib’s built-in `rlsw` software renderer (`GRAPHICS_API_OPENGL_SOFTWARE`), but it only achieved ~5–8 FPS. TinyGL was dramatically faster.
 
 Implementation details:
 
-- `third_party/raylib/src/platforms/rcore_memory.c` maps `/dev/fb0`.
-- Software framebuffer is blitted into the physical framebuffer.
-- Uses `FBIOPAN_DISPLAY` to support double-buffering.
+- `third_party/raylib/src/platforms/rcore_memory.c` manages the display pipeline.
+- TinyGL renders into MMA-allocated memory via its `ZBuffer` (zero-copy).
+- **MI GFX hardware blit** (primary path) transfers the ARGB framebuffer to `/dev/fb0`.
+- **CPU blit** (fallback) does manual ARGB→framebuffer conversion when MI GFX is unavailable.
+- Our TinyGL fork (`tslmy/tinygl`, branch `mmf`) adds `GL_RGBA`/`GL_LUMINANCE`/`GL_LUMINANCE_ALPHA` texture support and `GL_SRC_ALPHA` blending for text rendering.
 
-This reliably renders the spinning cube on MMF.
+This reliably renders the spinning cube with text overlay on MMF.
 
 ## Input / Quit
 
