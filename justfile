@@ -33,3 +33,13 @@ deploy host:
 
 clean:
   rm -rf {{justfile_directory()}}/dist
+
+# Build, run in emulated ARM Docker, take screenshot, and open it.
+try frames="60":
+  just build
+  docker run --rm --platform linux/arm/v7 \
+    -v {{justfile_directory()}}/dist:/app \
+    -w /app \
+    arm32v7/debian:bullseye \
+    ./raylib-cube --screenshot {{frames}}
+  open {{justfile_directory()}}/dist/screenshot.png
