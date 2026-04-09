@@ -683,18 +683,85 @@ static void InitWoodTexture() {
     UnloadImage(img);
 }
 
-// Draw ground as textured quad (TinyGL wraps UVs automatically via bitmask)
+// Procedural heightfield for floor bump (simulates hardwood2_bump.jpg)
+static float FloorBumpHeight(float x, float z) {
+    // Two octaves of hash-based noise for plank-like bumps
+    auto hash = [](float a, float b) -> float {
+        unsigned int h = (unsigned int)(a * 73.0f) * 374761393u
+                       + (unsigned int)(b * 73.0f) * 668265263u;
+        h = (h ^ (h >> 13)) * 1274126177u;
+        return (float)(h & 0xFFFF) / 65535.0f;
+    };
+    // Plank-direction bump (along X, varying in Z)
+    float bx = floorf(x * 2.0f), bz = floorf(z * 3.0f);
+    float h1 = hash(bx, bz) * 0.012f;
+    // Fine grain
+    float fx = floorf(x * 8.0f), fz = floorf(z * 8.0f);
+    float h2 = hash(fx + 100, fz + 200) * 0.005f;
+    return h1 + h2;
+}
+
+// Compute bump normal from finite differences
+static Vector3 FloorBumpNormal(float x, float z) {
+    const float eps = 0.05f;
+    float hc = FloorBumpHeight(x, z);
+    float hx = FloorBumpHeight(x + eps, z);
+    float hz = FloorBumpHeight(x, z + eps);
+    // Tangent vectors: (eps, hx-hc, 0) and (0, hz-hc, eps)
+    // Normal = cross product, normalized
+    Vector3 n = {-(hx - hc) / eps, 1.0f, -(hz - hc) / eps};
+    return Vector3Normalize(n);
+}
+
+// Draw ground as subdivided lit textured mesh with bump displacement
 static void DrawTexturedGround(float halfSize, float tileRepeat) {
+    const int SUBDIV = 24;
+    float step = 2.0f * halfSize / SUBDIV;
+    float uvStep = tileRepeat / SUBDIV;
+
     rlSetTexture(woodTexture.id);
     rlBegin(RL_TRIANGLES);
-        rlColor4ub(255, 255, 255, 255);
-        rlTexCoord2f(0, 0);           rlVertex3f(-halfSize, 0, -halfSize);
-        rlTexCoord2f(tileRepeat, 0);   rlVertex3f( halfSize, 0, -halfSize);
-        rlTexCoord2f(tileRepeat, tileRepeat); rlVertex3f( halfSize, 0,  halfSize);
 
-        rlTexCoord2f(0, 0);           rlVertex3f(-halfSize, 0, -halfSize);
-        rlTexCoord2f(tileRepeat, tileRepeat); rlVertex3f( halfSize, 0,  halfSize);
-        rlTexCoord2f(0, tileRepeat);   rlVertex3f(-halfSize, 0,  halfSize);
+    for (int zi = 0; zi < SUBDIV; zi++) {
+        for (int xi = 0; xi < SUBDIV; xi++) {
+            float x0 = -halfSize + xi * step;
+            float z0 = -halfSize + zi * step;
+            float x1 = x0 + step;
+            float z1 = z0 + step;
+            float u0 = xi * uvStep, u1 = (xi + 1) * uvStep;
+            float v0 = zi * uvStep, v1 = (zi + 1) * uvStep;
+
+            // Vertex heights from bump
+            float y00 = FloorBumpHeight(x0, z0);
+            float y10 = FloorBumpHeight(x1, z0);
+            float y01 = FloorBumpHeight(x0, z1);
+            float y11 = FloorBumpHeight(x1, z1);
+
+            // Per-quad bump normal (average of center)
+            float cx = (x0 + x1) * 0.5f, cz = (z0 + z1) * 0.5f;
+            Vector3 n = FloorBumpNormal(cx, cz);
+
+            // Light the quad
+            float keyDot = Vector3DotProduct(n, LIGHT_KEY);
+            if (keyDot < 0) keyDot = 0;
+            float fillDot = Vector3DotProduct(n, LIGHT_FILL);
+            if (fillDot < 0) fillDot = 0;
+            float lum = 0.55f + 0.30f * keyDot + 0.15f * fillDot;
+            unsigned char c = (unsigned char)(lum * 255.0f > 255 ? 255 : lum * 255.0f);
+
+            rlColor4ub(c, c, c, 255);
+
+            // Triangle 1
+            rlTexCoord2f(u0, v0); rlVertex3f(x0, y00, z0);
+            rlTexCoord2f(u1, v0); rlVertex3f(x1, y10, z0);
+            rlTexCoord2f(u1, v1); rlVertex3f(x1, y11, z1);
+            // Triangle 2
+            rlTexCoord2f(u0, v0); rlVertex3f(x0, y00, z0);
+            rlTexCoord2f(u1, v1); rlVertex3f(x1, y11, z1);
+            rlTexCoord2f(u0, v1); rlVertex3f(x0, y01, z1);
+        }
+    }
+
     rlEnd();
     rlSetTexture(0);
 }
