@@ -617,9 +617,24 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         float spec = specDot;
         for (int p = 0; p < 4; p++) spec *= spec;  // spec^16
 
-        // ── Clearcoat specular (tighter highlight, white, 50% strength) ──
-        // Simulates clearcoat=0.5 from the Three.js MeshPhysicalMaterial
-        float ccSpec = specDot;
+        // ── Clearcoat specular with scratch normal map ──
+        // Simulates clearcoat=0.5 + clearcoatNormalMap (Scratched_gold)
+        // Separate higher-frequency anisotropic perturbation for the clearcoat layer
+        Vector3 ccN = n;
+        {
+            unsigned int s2 = (unsigned int)(faceCtr.x * 5000) * 48271u
+                            + (unsigned int)(faceCtr.z * 5000) * 16807u
+                            + (unsigned int)(f * 65537u);
+            // Anisotropic: stronger along one direction (simulates directional scratches)
+            float sx = ((s2 & 0xFF) / 255.0f - 0.5f) * 0.15f;
+            float sz = (((s2 >> 8) & 0xFF) / 255.0f - 0.5f) * 0.05f;
+            ccN.x += sx; ccN.z += sz;
+            float len = sqrtf(ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z);
+            if (len > 0.001f) { ccN.x /= len; ccN.y /= len; ccN.z /= len; }
+        }
+        float ccSpecDot = Vector3DotProduct(ccN, halfVec);
+        if (ccSpecDot < 0) ccSpecDot = 0;
+        float ccSpec = ccSpecDot;
         for (int p = 0; p < 5; p++) ccSpec *= ccSpec;  // ccSpec^32
         float clearcoat = 0.5f * ccSpec;
 
