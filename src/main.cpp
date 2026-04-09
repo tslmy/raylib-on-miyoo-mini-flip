@@ -272,7 +272,6 @@ static int numDice = 0;
 
 // 80% transparent dice (alpha = 20% of 255 ≈ 51)
 static const unsigned char DIE_ALPHA = 51;
-static const unsigned char WIRE_ALPHA = 120;
 
 // Triangle buffer for back-to-front sorting (painter's algorithm)
 struct SortTri {
@@ -283,13 +282,6 @@ struct SortTri {
 // Worst case: 12 dice * 20 faces * 4 tris/face = 960
 static SortTri triBuffer[1024];
 static int triCount = 0;
-
-// Wireframe edge buffer (drawn after faces, semi-transparent)
-struct WireEdge {
-    Vector3 a, b;
-};
-static WireEdge wireBuffer[1024];
-static int wireCount = 0;
 
 // Hot bar: per-type counts and selection cursor
 static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
@@ -469,7 +461,7 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
-static void CollectDieTris(const ActiveDie& d, const Matrix& xform) {
+static void CollectDieTris(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
@@ -479,23 +471,41 @@ static void CollectDieTris(const ActiveDie& d, const Matrix& xform) {
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
         Vector3 n = FaceNormal(wv, face);
+
+        // Diffuse: two-light setup
         float key  = Vector3DotProduct(n, LIGHT_KEY);
         if (key < 0) key = 0;
         float fill = Vector3DotProduct(n, LIGHT_FILL);
         if (fill < 0) fill = 0;
-        float intensity = 0.45f + 0.45f * key + 0.2f * fill;
-        if (intensity > 1.0f) intensity = 1.0f;
 
-        Color col;
-        if (face.value >= 0) {
-            col = {(unsigned char)(base.r * intensity),
-                   (unsigned char)(base.g * intensity),
-                   (unsigned char)(base.b * intensity), DIE_ALPHA};
-        } else {
-            col = {(unsigned char)(base.r * intensity * 0.6f),
-                   (unsigned char)(base.g * intensity * 0.6f),
-                   (unsigned char)(base.b * intensity * 0.6f), DIE_ALPHA};
+        // Specular: view-dependent highlight from key light
+        Vector3 faceCtr = {0, 0, 0};
+        for (int j = 0; j < face.count; j++) {
+            faceCtr.x += wv[face.idx[j]].x;
+            faceCtr.y += wv[face.idx[j]].y;
+            faceCtr.z += wv[face.idx[j]].z;
         }
+        faceCtr.x /= face.count; faceCtr.y /= face.count; faceCtr.z /= face.count;
+        Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, faceCtr));
+        Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
+        float spec = Vector3DotProduct(n, halfVec);
+        if (spec < 0) spec = 0;
+        spec = spec * spec * spec * spec;  // sharp highlight (pow 4)
+
+        float diffuse = 0.3f + 0.5f * key + 0.2f * fill;
+        float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
+
+        // Blend base color (diffuse) with white (specular)
+        float sr = base.r * diffuse * dimFactor + 255.0f * spec * 0.6f;
+        float sg = base.g * diffuse * dimFactor + 255.0f * spec * 0.6f;
+        float sb = base.b * diffuse * dimFactor + 255.0f * spec * 0.6f;
+        if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
+
+        // Fresnel-like: faces viewed edge-on are slightly more opaque
+        float facing = fabsf(Vector3DotProduct(n, viewDir));
+        unsigned char alpha = (unsigned char)(DIE_ALPHA + (1.0f - facing) * 40);
+
+        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
 
         for (int j = 1; j < face.count - 1; j++) {
             if (triCount >= 1024) break;
@@ -504,14 +514,6 @@ static void CollectDieTris(const ActiveDie& d, const Matrix& xform) {
             t.v[1] = wv[face.idx[j]];
             t.v[2] = wv[face.idx[j+1]];
             t.col = col;
-        }
-
-        // Collect wireframe edges
-        for (int j = 0; j < face.count; j++) {
-            if (wireCount >= 1024) break;
-            WireEdge& e = wireBuffer[wireCount++];
-            e.a = wv[face.idx[j]];
-            e.b = wv[face.idx[(j+1) % face.count]];
         }
     }
 }
@@ -539,15 +541,7 @@ static void FlushSortedTris(Vector3 camPos) {
     rlEnableDepthMask();
     EndBlendMode();
 
-    // Draw wireframe edges on top (semi-transparent)
-    Color wire = {40, 40, 50, WIRE_ALPHA};
-    BeginBlendMode(BLEND_ALPHA);
-    for (int i = 0; i < wireCount; i++)
-        DrawLine3D(wireBuffer[i].a, wireBuffer[i].b, wire);
-    EndBlendMode();
-
     triCount = 0;
-    wireCount = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -764,7 +758,7 @@ int main(void) {
         rlDisableBackfaceCulling();
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
-            CollectDieTris(dice[i], xf);
+            CollectDieTris(dice[i], xf, camera.position);
         }
         FlushSortedTris(camera.position);
         rlEnableBackfaceCulling();
