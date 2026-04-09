@@ -449,46 +449,115 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
-// Average floor color — used for shadow blending against the wood texture
-static const Color GROUND_COLOR = {140, 100, 58, 255};
-
-// Draw a dark blob shadow on the ground plane beneath a die.
-// Uses concentric circle rings (triangle fans) for a soft circular edge.
-static void DrawBlobShadow(float px, float py, float pz) {
+// Project a die's silhouette onto the ground plane as a shadow.
+// Projects world-space vertices along the key light direction to Y=0,
+// computes 2D convex hull, then draws a dark inner polygon with an
+// expanded soft penumbra ring.
+static void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
     const float groundY = 0.002f;
-    float height = (py > 0) ? py : 0;
+    const float PENUMBRA = 0.18f;  // penumbra expansion distance
+
+    // Transform die vertices to world space
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    // Project each vertex along the key light direction onto Y=0
+    // Ray: P + t*L, solve for P.y + t*L.y = 0 => t = -P.y / L.y
+    Vector2 proj[MAX_DIE_VERTS];
+    int nProj = 0;
+    for (int i = 0; i < d.numVerts; i++) {
+        if (LIGHT_KEY.y <= 0.001f) continue;  // light must point upward
+        float t = -wv[i].y / LIGHT_KEY.y;
+        // Only project if the vertex is above the ground (shadow falls below)
+        // Use negative t because light direction points FROM the surface
+        t = wv[i].y / LIGHT_KEY.y;
+        proj[nProj++] = {wv[i].x - LIGHT_KEY.x * t,
+                         wv[i].z - LIGHT_KEY.z * t};
+    }
+    if (nProj < 3) return;
+
+    // 2D convex hull (Andrew's monotone chain)
+    // Sort by x, then y
+    for (int i = 0; i < nProj - 1; i++)
+        for (int j = i + 1; j < nProj; j++)
+            if (proj[j].x < proj[i].x ||
+                (proj[j].x == proj[i].x && proj[j].y < proj[i].y)) {
+                Vector2 tmp = proj[i]; proj[i] = proj[j]; proj[j] = tmp;
+            }
+
+    Vector2 hull[MAX_DIE_VERTS * 2];
+    int k = 0;
+    // Lower hull
+    for (int i = 0; i < nProj; i++) {
+        while (k >= 2) {
+            float cross = (hull[k-1].x - hull[k-2].x) * (proj[i].y - hull[k-2].y)
+                        - (hull[k-1].y - hull[k-2].y) * (proj[i].x - hull[k-2].x);
+            if (cross <= 0) k--; else break;
+        }
+        hull[k++] = proj[i];
+    }
+    // Upper hull
+    int lower_size = k + 1;
+    for (int i = nProj - 2; i >= 0; i--) {
+        while (k >= lower_size) {
+            float cross = (hull[k-1].x - hull[k-2].x) * (proj[i].y - hull[k-2].y)
+                        - (hull[k-1].y - hull[k-2].y) * (proj[i].x - hull[k-2].x);
+            if (cross <= 0) k--; else break;
+        }
+        hull[k++] = proj[i];
+    }
+    int hullCount = k - 1;  // last point == first point
+    if (hullCount < 3) return;
+
+    // Compute centroid for expansion and fan rendering
+    float cx = 0, cz = 0;
+    for (int i = 0; i < hullCount; i++) { cx += hull[i].x; cz += hull[i].y; }
+    cx /= hullCount; cz /= hullCount;
+
+    // Height-based intensity fade
+    float height = xform.m13;  // translation Y
+    if (height < 0) height = 0;
     float intensity = 1.0f - height / 8.0f;
     if (intensity < 0) return;
+    unsigned char innerAlpha = (unsigned char)(intensity * 140);
+    Color innerCol = {0, 0, 0, innerAlpha};
 
-    float r_inner = 0.6f + height * 0.05f;
-    float r_outer = 1.0f + height * 0.15f;
+    // Expand hull outward for penumbra ring
+    Vector2 outerHull[MAX_DIE_VERTS * 2];
+    for (int i = 0; i < hullCount; i++) {
+        float dx = hull[i].x - cx;
+        float dz = hull[i].y - cz;
+        float len = sqrtf(dx * dx + dz * dz);
+        if (len > 0.001f) {
+            outerHull[i] = {hull[i].x + dx / len * PENUMBRA,
+                            hull[i].y + dz / len * PENUMBRA};
+        } else {
+            outerHull[i] = hull[i];
+        }
+    }
 
-    auto shadowCol = [&](float strength) -> Color {
-        float s = intensity * strength;
-        unsigned char a = (unsigned char)(s * 90);  // subtle alpha shadow
-        return {0, 0, 0, a};
-    };
-    Color inner = shadowCol(0.7f);
-    Color outer = shadowCol(0.25f);
+    // Draw inner shadow as triangle fan
+    for (int i = 0; i < hullCount; i++) {
+        int j = (i + 1) % hullCount;
+        DrawTriangle3D({cx, groundY, cz},
+                       {hull[i].x, groundY, hull[i].y},
+                       {hull[j].x, groundY, hull[j].y}, innerCol);
+    }
 
-    const int SEGS = 12;
-    for (int i = 0; i < SEGS; i++) {
-        float a0 = (float)i / SEGS * 2.0f * PI;
-        float a1 = (float)(i + 1) / SEGS * 2.0f * PI;
-        float c0 = cosf(a0), s0 = sinf(a0);
-        float c1 = cosf(a1), s1 = sinf(a1);
-
-        // Inner disk (darker core)
-        DrawTriangle3D({px, groundY, pz},
-                       {px + c0 * r_inner, groundY, pz + s0 * r_inner},
-                       {px + c1 * r_inner, groundY, pz + s1 * r_inner}, inner);
-        // Outer ring (lighter penumbra)
-        DrawTriangle3D({px + c0 * r_inner, groundY, pz + s0 * r_inner},
-                       {px + c0 * r_outer, groundY, pz + s0 * r_outer},
-                       {px + c1 * r_outer, groundY, pz + s1 * r_outer}, outer);
-        DrawTriangle3D({px + c0 * r_inner, groundY, pz + s0 * r_inner},
-                       {px + c1 * r_outer, groundY, pz + s1 * r_outer},
-                       {px + c1 * r_inner, groundY, pz + s1 * r_inner}, outer);
+    // Draw penumbra ring (fades from innerAlpha to 0)
+    for (int i = 0; i < hullCount; i++) {
+        int j = (i + 1) % hullCount;
+        // Two triangles per edge: inner[i], outer[i], outer[j] and inner[i], outer[j], inner[j]
+        // Use averaged alpha for the penumbra triangles
+        unsigned char midAlpha = innerAlpha / 3;
+        Color midCol = {0, 0, 0, midAlpha};
+        DrawTriangle3D({hull[i].x, groundY, hull[i].y},
+                       {outerHull[i].x, groundY, outerHull[i].y},
+                       {outerHull[j].x, groundY, outerHull[j].y}, midCol);
+        DrawTriangle3D({hull[i].x, groundY, hull[i].y},
+                       {outerHull[j].x, groundY, outerHull[j].y},
+                       {hull[j].x, groundY, hull[j].y}, midCol);
     }
 }
 
@@ -935,10 +1004,10 @@ int main(int argc, char **argv) {
         // (TGL_BLEND_FUNC) which reads actual vertex alpha from the packed color.
         glShadeModel(GL_FLAT);
 
-        // Blob shadows (alpha-blended dark overlays on ground)
+        // Projected outline shadows (alpha-blended silhouettes on ground)
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
-            DrawBlobShadow(xf.m12, xf.m13, xf.m14);
+            DrawProjectedShadow(dice[i], xf);
         }
 
         // Sort dice back-to-front for correct transparency compositing
