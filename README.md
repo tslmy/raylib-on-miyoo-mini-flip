@@ -82,7 +82,7 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 ## Repo layout
 
-- `src/main.c`: Demo program (spinning cube with orbit camera control)
+- `src/main.cpp`: Demo program (spinning cube with orbit camera control)
 - `src/tinygl_stubs.c`: GL functions missing from TinyGL that Raylib requires
 - `src/evdev_probe.c`: Diagnostic tool to verify MMF button→evdev keycodes on device
 - `docker/`: Cross-compile toolchain
