@@ -2,7 +2,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
-#include <algorithm>
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -271,19 +270,6 @@ struct ActiveDie {
 static ActiveDie dice[MAX_ACTIVE_DICE];
 static int numDice = 0;
 
-// 80% transparent dice (alpha = 20% of 255 ≈ 51)
-static const unsigned char DIE_ALPHA = 128;
-
-// Triangle buffer for back-to-front sorting (painter's algorithm)
-struct SortTri {
-    Vector3 v[3];
-    Color col;
-    float dist;  // squared distance from camera (for sorting only)
-};
-// Worst case: 12 dice * 20 faces * 4 tris/face = 960
-static SortTri triBuffer[1024];
-static int triCount = 0;
-
 // Hot bar: per-type counts and selection cursor
 static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
 static int hotbarSel = 1;
@@ -462,7 +448,8 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
-static void CollectDieTris(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
+// Draw lit die face triangles (opaque)
+static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
@@ -473,13 +460,11 @@ static void CollectDieTris(const ActiveDie& d, const Matrix& xform, Vector3 camP
         const Face& face = d.faces[f];
         Vector3 n = FaceNormal(wv, face);
 
-        // Diffuse: two-light setup
         float key  = Vector3DotProduct(n, LIGHT_KEY);
         if (key < 0) key = 0;
         float fill = Vector3DotProduct(n, LIGHT_FILL);
         if (fill < 0) fill = 0;
 
-        // Specular: view-dependent highlight from key light
         Vector3 faceCtr = {0, 0, 0};
         for (int j = 0; j < face.count; j++) {
             faceCtr.x += wv[face.idx[j]].x;
@@ -491,62 +476,21 @@ static void CollectDieTris(const ActiveDie& d, const Matrix& xform, Vector3 camP
         Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
         float spec = Vector3DotProduct(n, halfVec);
         if (spec < 0) spec = 0;
-        spec = spec * spec * spec * spec;  // sharp highlight (pow 4)
+        spec = spec * spec * spec * spec;
 
         float diffuse = 0.3f + 0.5f * key + 0.2f * fill;
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
 
-        // Blend base color (diffuse) with white (specular)
         float sr = base.r * diffuse * dimFactor + 255.0f * spec * 0.6f;
         float sg = base.g * diffuse * dimFactor + 255.0f * spec * 0.6f;
         float sb = base.b * diffuse * dimFactor + 255.0f * spec * 0.6f;
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
-        // Fresnel-like: faces viewed edge-on are slightly more opaque
-        float facing = fabsf(Vector3DotProduct(n, viewDir));
-        unsigned char alpha = (unsigned char)(DIE_ALPHA + (1.0f - facing) * 40);
+        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, 255};
 
-        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
-
-        for (int j = 1; j < face.count - 1; j++) {
-            if (triCount >= 1024) break;
-            SortTri& t = triBuffer[triCount++];
-            t.v[0] = wv[face.idx[0]];
-            t.v[1] = wv[face.idx[j]];
-            t.v[2] = wv[face.idx[j+1]];
-            t.col = col;
-        }
+        for (int j = 1; j < face.count - 1; j++)
+            DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
     }
-}
-
-static void FlushSortedTris(Vector3 camPos) {
-    // Compute squared distance from camera to each triangle centroid
-    for (int i = 0; i < triCount; i++) {
-        SortTri& t = triBuffer[i];
-        float cx = (t.v[0].x + t.v[1].x + t.v[2].x) / 3.0f;
-        float cy = (t.v[0].y + t.v[1].y + t.v[2].y) / 3.0f;
-        float cz = (t.v[0].z + t.v[1].z + t.v[2].z) / 3.0f;
-        float dx = cx - camPos.x, dy = cy - camPos.y, dz = cz - camPos.z;
-        t.dist = dx*dx + dy*dy + dz*dz;
-    }
-
-    // Sort back-to-front (furthest first)
-    std::sort(triBuffer, triBuffer + triCount,
-              [](const SortTri& a, const SortTri& b) { return a.dist > b.dist; });
-
-    // Draw all sorted transparent triangles
-    // NOTE: BeginBlendMode/EndBlendMode are no-ops in GL1.1 mode
-    // (rlSetBlendMode is guarded by GRAPHICS_API_OPENGL_33/ES2),
-    // so we call the GL functions directly.
-    // Blend stays enabled through the 2D UI pass so font texture alpha works.
-    rlEnableColorBlend();
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    rlDisableDepthMask();
-    for (int i = 0; i < triCount; i++)
-        DrawTriangle3D(triBuffer[i].v[0], triBuffer[i].v[1], triBuffer[i].v[2], triBuffer[i].col);
-    rlEnableDepthMask();
-
-    triCount = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -820,16 +764,21 @@ int main(void) {
         DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10},{40,50,60,255});
         DrawGrid(20, 1.0f);
 
-        // Collect all die triangles (transparent), then sort & draw
+        // Draw opaque dice faces with lighting
         rlDisableBackfaceCulling();
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
-            CollectDieTris(dice[i], xf, camera.position);
+            DrawDieFacesLit(dice[i], xf, camera.position);
         }
-        FlushSortedTris(camera.position);
 
-        // Draw face number decals on the die surfaces (3D, with blending)
-        // Blend is already enabled from FlushSortedTris
+        // Enable blend for number decals (texture alpha) and 2D UI text.
+        // NOTE: BeginBlendMode/EndBlendMode are no-ops in GL1.1 mode
+        // (rlSetBlendMode is guarded by GRAPHICS_API_OPENGL_33/ES2),
+        // so we call the GL functions directly.
+        rlEnableColorBlend();
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        // Draw face number decals on the die surfaces
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawDieNumberDecals(dice[i], xf, camera.position);
