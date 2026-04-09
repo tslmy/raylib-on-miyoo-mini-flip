@@ -42,7 +42,7 @@ The MMF's SSD202D SoC (dual-core ARM Cortex-A7) has **no 3D GPU**, so we need a 
 
 ### Renderer: TinyGL
 
-We use [TinyGL][tgl] (C-Chads fork), a fast integer/fixed-point **OpenGL 1.1** software renderer. Raylib is built with `GRAPHICS_API_OPENGL_11` so its `rlgl.h` calls map directly to TinyGL's GL functions.
+We use [TinyGL][tgl][^1], a fast integer/fixed-point **OpenGL 1.1** software renderer. Raylib is built with `GRAPHICS_API_OPENGL_11` so its `rlgl.h` calls map directly to TinyGL's GL functions.
 
 TinyGL renders into a framebuffer via its `ZBuffer`, which we point at MMA-allocated memory for zero-copy display. Our [fork][tglf] adds:
 
@@ -66,10 +66,12 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
                                     ↘ CPU blit (fallback)
 ```
 
-[tgl]: https://github.com/C-Chads/tinygl
+[tgl]: https://github.com/jserv/tinygl
 [tglf]: https://github.com/tslmy/tinygl/tree/mmf
 [rlf]: https://github.com/tslmy/raylib/tree/mmf
 [pm]: https://github.com/raysan5/raylib/blob/c5fc7716229cef1727e7baf325a695a0ac00cf27/src/Makefile#L37-L38
+
+[^1]: We use the `jserv` fork. Previously, I started with the `C-Chads` fork due to its popularity, but that fork has been archived, so I switched to an actively maintained fork instead.
 
 > [!NOTE]
 > I tried EGL/GLES. I failed. See `docs/raylib-port-notes.md` for what I tried & learned.
