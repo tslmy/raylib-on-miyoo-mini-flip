@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
+#include <algorithm>
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -269,6 +270,27 @@ struct ActiveDie {
 static ActiveDie dice[MAX_ACTIVE_DICE];
 static int numDice = 0;
 
+// 80% transparent dice (alpha = 20% of 255 ≈ 51)
+static const unsigned char DIE_ALPHA = 51;
+static const unsigned char WIRE_ALPHA = 120;
+
+// Triangle buffer for back-to-front sorting (painter's algorithm)
+struct SortTri {
+    Vector3 v[3];
+    Color col;
+    float dist;  // squared distance from camera (for sorting only)
+};
+// Worst case: 12 dice * 20 faces * 4 tris/face = 960
+static SortTri triBuffer[1024];
+static int triCount = 0;
+
+// Wireframe edge buffer (drawn after faces, semi-transparent)
+struct WireEdge {
+    Vector3 a, b;
+};
+static WireEdge wireBuffer[1024];
+static int wireCount = 0;
+
 // Hot bar: per-type counts and selection cursor
 static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
 static int hotbarSel = 1;
@@ -447,7 +469,7 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
-static void DrawOneDie(const ActiveDie& d, const Matrix& xform) {
+static void CollectDieTris(const ActiveDie& d, const Matrix& xform) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
@@ -468,24 +490,64 @@ static void DrawOneDie(const ActiveDie& d, const Matrix& xform) {
         if (face.value >= 0) {
             col = {(unsigned char)(base.r * intensity),
                    (unsigned char)(base.g * intensity),
-                   (unsigned char)(base.b * intensity), 255};
+                   (unsigned char)(base.b * intensity), DIE_ALPHA};
         } else {
             col = {(unsigned char)(base.r * intensity * 0.6f),
                    (unsigned char)(base.g * intensity * 0.6f),
-                   (unsigned char)(base.b * intensity * 0.6f), 255};
+                   (unsigned char)(base.b * intensity * 0.6f), DIE_ALPHA};
         }
 
-        for (int j = 1; j < face.count - 1; j++)
-            DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
+        for (int j = 1; j < face.count - 1; j++) {
+            if (triCount >= 1024) break;
+            SortTri& t = triBuffer[triCount++];
+            t.v[0] = wv[face.idx[0]];
+            t.v[1] = wv[face.idx[j]];
+            t.v[2] = wv[face.idx[j+1]];
+            t.col = col;
+        }
+
+        // Collect wireframe edges
+        for (int j = 0; j < face.count; j++) {
+            if (wireCount >= 1024) break;
+            WireEdge& e = wireBuffer[wireCount++];
+            e.a = wv[face.idx[j]];
+            e.b = wv[face.idx[(j+1) % face.count]];
+        }
+    }
+}
+
+static void FlushSortedTris(Vector3 camPos) {
+    // Compute squared distance from camera to each triangle centroid
+    for (int i = 0; i < triCount; i++) {
+        SortTri& t = triBuffer[i];
+        float cx = (t.v[0].x + t.v[1].x + t.v[2].x) / 3.0f;
+        float cy = (t.v[0].y + t.v[1].y + t.v[2].y) / 3.0f;
+        float cz = (t.v[0].z + t.v[1].z + t.v[2].z) / 3.0f;
+        float dx = cx - camPos.x, dy = cy - camPos.y, dz = cz - camPos.z;
+        t.dist = dx*dx + dy*dy + dz*dz;
     }
 
-    // Wireframe
-    Color wire = {40, 40, 50, 255};
-    for (int f = 0; f < d.numFaces; f++) {
-        const Face& face = d.faces[f];
-        for (int j = 0; j < face.count; j++)
-            DrawLine3D(wv[face.idx[j]], wv[face.idx[(j+1) % face.count]], wire);
-    }
+    // Sort back-to-front (furthest first)
+    std::sort(triBuffer, triBuffer + triCount,
+              [](const SortTri& a, const SortTri& b) { return a.dist > b.dist; });
+
+    // Draw all sorted transparent triangles
+    BeginBlendMode(BLEND_ALPHA);
+    rlDisableDepthMask();
+    for (int i = 0; i < triCount; i++)
+        DrawTriangle3D(triBuffer[i].v[0], triBuffer[i].v[1], triBuffer[i].v[2], triBuffer[i].col);
+    rlEnableDepthMask();
+    EndBlendMode();
+
+    // Draw wireframe edges on top (semi-transparent)
+    Color wire = {40, 40, 50, WIRE_ALPHA};
+    BeginBlendMode(BLEND_ALPHA);
+    for (int i = 0; i < wireCount; i++)
+        DrawLine3D(wireBuffer[i].a, wireBuffer[i].b, wire);
+    EndBlendMode();
+
+    triCount = 0;
+    wireCount = 0;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -692,18 +754,21 @@ int main(void) {
         ClearBackground({20, 24, 30, 255});
 
         BeginMode3D(camera);
-        rlDisableBackfaceCulling();
 
-        for (int i = 0; i < numDice; i++) {
-            Matrix xf = GetDieTransform(dice[i]);
-            DrawOneDie(dice[i], xf);
-        }
-
-        rlEnableBackfaceCulling();
-
+        // Opaque geometry first: ground plane and grid
         DrawTriangle3D({-10,0,-10}, {10,0,-10}, {10,0,10}, {40,50,60,255});
         DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10},{40,50,60,255});
         DrawGrid(20, 1.0f);
+
+        // Collect all die triangles (transparent), then sort & draw
+        rlDisableBackfaceCulling();
+        for (int i = 0; i < numDice; i++) {
+            Matrix xf = GetDieTransform(dice[i]);
+            CollectDieTris(dice[i], xf);
+        }
+        FlushSortedTris(camera.position);
+        rlEnableBackfaceCulling();
+
         EndMode3D();
 
         // ── Face numbers (2D overlay) ──
