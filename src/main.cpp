@@ -972,18 +972,14 @@ int main(int argc, char **argv) {
                 if (da < db) { int tmp = diceOrder[i]; diceOrder[i] = diceOrder[j]; diceOrder[j] = tmp; }
             }
 
-        // Draw semi-transparent dice (depth write off so further dice show through)
+        // Draw each die completely (faces + decals) before the next, so a
+        // nearer die's semi-transparent faces correctly tint the numbers on
+        // a farther die behind it.
         rlDisableDepthMask();
         for (int i = 0; i < numDice; i++) {
             int di = diceOrder[i];
             Matrix xf = GetDieTransform(dice[di]);
             DrawDieFacesLit(dice[di], xf, camera.position);
-        }
-
-        // Draw face number decals on the die surfaces
-        for (int i = 0; i < numDice; i++) {
-            int di = diceOrder[i];
-            Matrix xf = GetDieTransform(dice[di]);
             DrawDieNumberDecals(dice[di], xf, camera.position);
         }
         rlEnableDepthMask();
