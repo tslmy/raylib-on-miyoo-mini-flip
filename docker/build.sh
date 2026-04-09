@@ -78,7 +78,7 @@ done
 
 # Compile with MMF headers; keep code size down via section garbage collection.
 # Pass the same arch flags as the raylib build so the ABI matches.
-CFLAGS="-I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
+CFLAGS="-DGRAPHICS_API_OPENGL_11 -I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
 # Link against the MMF sysroot to keep glibc compatibility.
 LDFLAGS="--sysroot=$SYSROOT $SYSROOT_LDFLAGS -Wl,--gc-sections $RPATH_LINKS"
 LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src -L$BULLET_BUILD_DIR"
