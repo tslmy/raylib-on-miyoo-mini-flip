@@ -14,8 +14,15 @@
 #define MMF_DPAD_RIGHT  262
 #define MMF_A           32   // KEY_SPACE
 #define MMF_B           341  // KEY_LEFT_CONTROL
+#define MMF_X           340  // KEY_LEFT_SHIFT
+#define MMF_Y           342  // KEY_LEFT_ALT
 #define MMF_L1          69   // KEY_E
+#define MMF_L2          258  // KEY_TAB
 #define MMF_R1          84   // KEY_T
+#define MMF_R2          259  // KEY_BACKSPACE
+
+static const int SCR_W = 750;
+static const int SCR_H = 560;
 
 static float RandF(float lo, float hi) {
     return lo + (hi - lo) * ((float)rand() / (float)RAND_MAX);
@@ -32,14 +39,14 @@ static float RandF(float lo, float hi) {
 struct Face {
     int idx[MAX_FACE_VERTS];
     int count;
-    int value;  // face number (≥0), or -1 for non-numbered edge faces (d10)
+    int value;  // face number (>=0), or -1 for non-numbered edge faces (d10)
 };
 
 struct DiceDef {
     const char* name;
     int numValues;
     float scaleFactor;
-    bool invertUpside; // true for d4: read bottom face, not top
+    bool invertUpside;
     int numVerts;
     float rawVerts[MAX_DIE_VERTS][3];
     int numFaces;
@@ -47,7 +54,7 @@ struct DiceDef {
 };
 
 static const DiceDef DICE_DEFS[] = {
-    // ─── D4 (tetrahedron) ───
+    // D4 (tetrahedron)
     {
         "d4", 4, 1.2f, true,
         4,
@@ -60,7 +67,7 @@ static const DiceDef DICE_DEFS[] = {
             {{1,2,3},       3, 4},
         }
     },
-    // ─── D6 (cube) ───
+    // D6 (cube)
     {
         "d6", 6, 0.9f, false,
         8,
@@ -76,7 +83,7 @@ static const DiceDef DICE_DEFS[] = {
             {{4,5,6,7},     4, 6},
         }
     },
-    // ─── D8 (octahedron) ───
+    // D8 (octahedron)
     {
         "d8", 8, 1.0f, false,
         6,
@@ -93,7 +100,7 @@ static const DiceDef DICE_DEFS[] = {
             {{1,5,3},       3, 8},
         }
     },
-    // ─── D10 (pentagonal trapezohedron) ───
+    // D10 (pentagonal trapezohedron)
     {
         "d10", 10, 0.9f, false,
         12,
@@ -113,7 +120,6 @@ static const DiceDef DICE_DEFS[] = {
         },
         20,
         {
-            // 10 value faces
             {{5,7,11},      3, 0},
             {{4,2,10},      3, 1},
             {{1,3,11},      3, 2},
@@ -124,7 +130,6 @@ static const DiceDef DICE_DEFS[] = {
             {{2,0,10},      3, 7},
             {{3,5,11},      3, 8},
             {{6,4,10},      3, 9},
-            // 10 non-value edge faces
             {{1,0,2},       3, -1},
             {{1,2,3},       3, -1},
             {{3,2,4},       3, -1},
@@ -137,7 +142,7 @@ static const DiceDef DICE_DEFS[] = {
             {{9,0,1},       3, -1},
         }
     },
-    // ─── D12 (dodecahedron) ───
+    // D12 (dodecahedron)
     {
         "d12", 12, 0.9f, false,
         20,
@@ -179,7 +184,7 @@ static const DiceDef DICE_DEFS[] = {
             {{3,19,7,17,1}, 5, 12},
         }
     },
-    // ─── D20 (icosahedron) ───
+    // D20 (icosahedron)
     {
         "d20", 20, 1.0f, false,
         12,
@@ -225,34 +230,54 @@ static const DiceDef DICE_DEFS[] = {
 #define NUM_DICE_TYPES 6
 
 // ═══════════════════════════════════════════════════════════════════
-// Runtime die geometry (normalized + scaled)
+// Pastel2 colormap (matplotlib)
+// ═══════════════════════════════════════════════════════════════════
+
+static const Color PASTEL2[] = {
+    {179, 226, 205, 255},  // mint
+    {253, 205, 172, 255},  // peach
+    {203, 213, 232, 255},  // lavender
+    {244, 202, 228, 255},  // pink
+    {230, 245, 201, 255},  // lime
+    {255, 242, 174, 255},  // butter
+    {241, 226, 204, 255},  // tan
+    {204, 204, 204, 255},  // silver
+};
+#define NUM_PASTEL2 8
+
+// ═══════════════════════════════════════════════════════════════════
+// Active dice state
 // ═══════════════════════════════════════════════════════════════════
 
 static const float DIE_RADIUS = 0.7f;
-static Vector3 dieVerts[MAX_DIE_VERTS];
-static int dieNumVerts;
-static Face dieFaces[MAX_DIE_FACES];
-static int dieNumFaces;
+#define MAX_ACTIVE_DICE 12
 
-static void SetupDieGeometry(int typeIdx) {
-    const DiceDef& def = DICE_DEFS[typeIdx];
-    dieNumVerts = def.numVerts;
-    dieNumFaces = def.numFaces;
-    float r = DIE_RADIUS * def.scaleFactor;
-    for (int i = 0; i < def.numVerts; i++) {
-        Vector3 v = {def.rawVerts[i][0], def.rawVerts[i][1], def.rawVerts[i][2]};
-        dieVerts[i] = Vector3Scale(Vector3Normalize(v), r);
-    }
-    for (int i = 0; i < def.numFaces; i++)
-        dieFaces[i] = def.faces[i];
-}
+struct ActiveDie {
+    int typeIdx;
+    Color baseColor;
+    btRigidBody* body;
+    btConvexHullShape* shape;
+    Vector3 verts[MAX_DIE_VERTS];
+    int numVerts;
+    Face faces[MAX_DIE_FACES];
+    int numFaces;
+    int rolledValue;
+    int settledFrames;
+    bool settled;
+};
+
+static ActiveDie dice[MAX_ACTIVE_DICE];
+static int numDice = 0;
+
+// Hot bar: per-type counts and selection cursor
+static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
+static int hotbarSel = 1;
 
 // ═══════════════════════════════════════════════════════════════════
 // Bullet3 physics
 // ═══════════════════════════════════════════════════════════════════
 
 static btDiscreteDynamicsWorld* world;
-static btRigidBody* dieBody;
 static btRigidBody* floorBody;
 static btDefaultCollisionConfiguration* collisionConfig;
 static btCollisionDispatcher* dispatcher;
@@ -276,49 +301,83 @@ static void InitPhysics() {
     world->addRigidBody(floorBody);
 }
 
-static void ThrowDie() {
-    if (dieBody) {
-        world->removeRigidBody(dieBody);
-        delete dieBody->getMotionState();
-        delete dieBody->getCollisionShape();
-        delete dieBody;
-        dieBody = nullptr;
+static void ClearDice() {
+    for (int i = 0; i < numDice; i++) {
+        world->removeRigidBody(dice[i].body);
+        delete dice[i].body->getMotionState();
+        delete dice[i].body;
+        delete dice[i].shape;
     }
+    numDice = 0;
+}
 
-    btConvexHullShape* shape = new btConvexHullShape();
-    for (int i = 0; i < dieNumVerts; i++)
-        shape->addPoint(btVector3(dieVerts[i].x, dieVerts[i].y, dieVerts[i].z));
+static void SetupDieVerts(ActiveDie& d) {
+    const DiceDef& def = DICE_DEFS[d.typeIdx];
+    d.numVerts = def.numVerts;
+    d.numFaces = def.numFaces;
+    float r = DIE_RADIUS * def.scaleFactor;
+    for (int i = 0; i < def.numVerts; i++) {
+        Vector3 v = {def.rawVerts[i][0], def.rawVerts[i][1], def.rawVerts[i][2]};
+        d.verts[i] = Vector3Scale(Vector3Normalize(v), r);
+    }
+    for (int i = 0; i < def.numFaces; i++)
+        d.faces[i] = def.faces[i];
+}
 
-    btScalar mass = 1.0f;
-    btVector3 inertia;
-    shape->calculateLocalInertia(mass, inertia);
+static void ThrowAll() {
+    ClearDice();
+    int total = 0;
+    for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
+    if (total == 0) return;
+    if (total > MAX_ACTIVE_DICE) total = MAX_ACTIVE_DICE;
 
-    btQuaternion rot;
-    rot.setEulerZYX(RandF(0, 6.28f), RandF(0, 6.28f), RandF(0, 6.28f));
+    int idx = 0;
+    for (int t = 0; t < NUM_DICE_TYPES && idx < total; t++) {
+        for (int c = 0; c < hotbarCount[t] && idx < total; c++, idx++) {
+            ActiveDie& d = dice[idx];
+            d.typeIdx = t;
+            d.baseColor = PASTEL2[rand() % NUM_PASTEL2];
+            d.rolledValue = -1;
+            d.settledFrames = 0;
+            d.settled = false;
+            SetupDieVerts(d);
 
-    btTransform startTransform;
-    startTransform.setIdentity();
-    startTransform.setOrigin(btVector3(RandF(-0.3f, 0.3f), 4.0f, RandF(-0.3f, 0.3f)));
-    startTransform.setRotation(rot);
+            d.shape = new btConvexHullShape();
+            for (int i = 0; i < d.numVerts; i++)
+                d.shape->addPoint(btVector3(d.verts[i].x, d.verts[i].y, d.verts[i].z));
 
-    btDefaultMotionState* ms = new btDefaultMotionState(startTransform);
-    btRigidBody::btRigidBodyConstructionInfo ci(mass, ms, shape, inertia);
-    ci.m_restitution = 0.4f;
-    ci.m_friction = 0.6f;
+            btScalar mass = 1.0f;
+            btVector3 inertia;
+            d.shape->calculateLocalInertia(mass, inertia);
 
-    dieBody = new btRigidBody(ci);
-    dieBody->setAngularVelocity(btVector3(RandF(-8, 8), RandF(-8, 8), RandF(-8, 8)));
-    dieBody->setLinearVelocity(btVector3(RandF(-1, 1), 0, RandF(-1, 1)));
-    world->addRigidBody(dieBody);
+            btQuaternion rot;
+            rot.setEulerZYX(RandF(0, 6.28f), RandF(0, 6.28f), RandF(0, 6.28f));
+
+            float spawnX = RandF(-1.5f, 1.5f);
+            float spawnZ = RandF(-1.5f, 1.5f);
+            float spawnY = 3.0f + RandF(0, 3.0f);
+
+            btTransform startXform;
+            startXform.setIdentity();
+            startXform.setOrigin(btVector3(spawnX, spawnY, spawnZ));
+            startXform.setRotation(rot);
+
+            btDefaultMotionState* ms = new btDefaultMotionState(startXform);
+            btRigidBody::btRigidBodyConstructionInfo ci(mass, ms, d.shape, inertia);
+            ci.m_restitution = 0.4f;
+            ci.m_friction = 0.6f;
+
+            d.body = new btRigidBody(ci);
+            d.body->setAngularVelocity(btVector3(RandF(-8,8), RandF(-8,8), RandF(-8,8)));
+            d.body->setLinearVelocity(btVector3(RandF(-2,2), RandF(-1,1), RandF(-2,2)));
+            world->addRigidBody(d.body);
+        }
+    }
+    numDice = idx;
 }
 
 static void CleanupPhysics() {
-    if (dieBody) {
-        world->removeRigidBody(dieBody);
-        delete dieBody->getMotionState();
-        delete dieBody->getCollisionShape();
-        delete dieBody;
-    }
+    ClearDice();
     world->removeRigidBody(floorBody);
     delete floorBody->getMotionState();
     delete floorBody->getCollisionShape();
@@ -331,13 +390,18 @@ static void CleanupPhysics() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Die reading — settle detection + face-up value
+// Helpers
 // ═══════════════════════════════════════════════════════════════════
 
-static bool IsDieSettled() {
-    btVector3 v = dieBody->getLinearVelocity();
-    btVector3 w = dieBody->getAngularVelocity();
-    return v.length() < 0.3f && w.length() < 0.3f;
+static Matrix GetDieTransform(const ActiveDie& d) {
+    float m[16];
+    d.body->getWorldTransform().getOpenGLMatrix(m);
+    return {
+        m[0], m[4], m[8],  m[12],
+        m[1], m[5], m[9],  m[13],
+        m[2], m[6], m[10], m[14],
+        m[3], m[7], m[11], m[15],
+    };
 }
 
 static Vector3 FaceNormal(const Vector3* wv, const Face& f) {
@@ -346,111 +410,170 @@ static Vector3 FaceNormal(const Vector3* wv, const Face& f) {
     return Vector3Normalize(Vector3CrossProduct(e1, e2));
 }
 
-static int GetFaceUpValue(const Matrix& xform, bool invertUp) {
+static bool IsDieSettled(const ActiveDie& d) {
+    btVector3 v = d.body->getLinearVelocity();
+    btVector3 w = d.body->getAngularVelocity();
+    return v.length() < 0.3f && w.length() < 0.3f;
+}
+
+static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
     Vector3 wv[MAX_DIE_VERTS];
-    for (int i = 0; i < dieNumVerts; i++)
-        wv[i] = Vector3Transform(dieVerts[i], xform);
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
 
-    Vector3 upDir = invertUp ? (Vector3){0, -1, 0} : (Vector3){0, 1, 0};
-    int bestFace = -1;
+    bool inv = DICE_DEFS[d.typeIdx].invertUpside;
+    Vector3 upDir = inv ? (Vector3){0,-1,0} : (Vector3){0,1,0};
+    int best = -1;
     float bestDot = -2.0f;
-
-    for (int f = 0; f < dieNumFaces; f++) {
-        if (dieFaces[f].value < 0) continue;
-        Vector3 n = FaceNormal(wv, dieFaces[f]);
-        float d = Vector3DotProduct(n, upDir);
-        if (d > bestDot) { bestDot = d; bestFace = f; }
+    for (int f = 0; f < d.numFaces; f++) {
+        if (d.faces[f].value < 0) continue;
+        Vector3 n = FaceNormal(wv, d.faces[f]);
+        float dot = Vector3DotProduct(n, upDir);
+        if (dot > bestDot) { bestDot = dot; best = f; }
     }
-    return bestFace >= 0 ? dieFaces[bestFace].value : -1;
+    return best >= 0 ? d.faces[best].value : -1;
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Rendering
+// 3D Rendering
 // ═══════════════════════════════════════════════════════════════════
 
 static const Vector3 LIGHT_DIR = Vector3Normalize((Vector3){0.3f, 0.6f, -0.7f});
 
-static void DrawDie(const Matrix& xform) {
+static void DrawOneDie(const ActiveDie& d, const Matrix& xform) {
     Vector3 wv[MAX_DIE_VERTS];
-    for (int i = 0; i < dieNumVerts; i++)
-        wv[i] = Vector3Transform(dieVerts[i], xform);
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
 
-    // Filled faces with lighting
-    for (int f = 0; f < dieNumFaces; f++) {
-        const Face& face = dieFaces[f];
+    Color base = d.baseColor;
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
         Vector3 n = FaceNormal(wv, face);
         float ndotl = Vector3DotProduct(n, LIGHT_DIR);
         if (ndotl < 0) ndotl = 0;
-        float intensity = 0.25f + 0.75f * ndotl;
+        float intensity = 0.3f + 0.7f * ndotl;
 
         Color col;
         if (face.value >= 0) {
-            unsigned char c = (unsigned char)(235 * intensity);
-            col = {c, c, (unsigned char)(255 * intensity), 255};
+            col = {(unsigned char)(base.r * intensity),
+                   (unsigned char)(base.g * intensity),
+                   (unsigned char)(base.b * intensity), 255};
         } else {
-            unsigned char c = (unsigned char)(150 * intensity);
-            col = {c, c, (unsigned char)(170 * intensity), 255};
+            col = {(unsigned char)(base.r * intensity * 0.6f),
+                   (unsigned char)(base.g * intensity * 0.6f),
+                   (unsigned char)(base.b * intensity * 0.6f), 255};
         }
 
         for (int j = 1; j < face.count - 1; j++)
             DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
     }
 
-    // Wireframe edges
-    Color wire = {50, 55, 65, 255};
-    for (int f = 0; f < dieNumFaces; f++) {
-        const Face& face = dieFaces[f];
+    // Wireframe
+    Color wire = {40, 40, 50, 255};
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
         for (int j = 0; j < face.count; j++)
             DrawLine3D(wv[face.idx[j]], wv[face.idx[(j+1) % face.count]], wire);
     }
 }
 
-// Project 3D point to 2D screen coordinates (manual MVP, since
-// GetWorldToScreen may not be available on all raylib builds).
-static Vector2 Project3D(Vector3 pos, Camera3D cam, int sw, int sh) {
+// ═══════════════════════════════════════════════════════════════════
+// Face number projection (2D overlay)
+// ═══════════════════════════════════════════════════════════════════
+
+static Matrix cachedMVP;
+
+static void CacheMVP(Camera3D cam) {
     Matrix view = MatrixLookAt(cam.position, cam.target, cam.up);
-    Matrix proj = MatrixPerspective(cam.fovy * DEG2RAD, (float)sw / sh, 0.01f, 1000.0f);
-    Matrix mvp = MatrixMultiply(view, proj);
-    float x = pos.x, y = pos.y, z = pos.z;
-    float cx = mvp.m0*x + mvp.m4*y + mvp.m8*z  + mvp.m12;
-    float cy = mvp.m1*x + mvp.m5*y + mvp.m9*z  + mvp.m13;
-    float cw = mvp.m3*x + mvp.m7*y + mvp.m11*z + mvp.m15;
-    if (cw < 0.001f) return {-1000, -1000};
-    return {(cx/cw + 1.0f) * 0.5f * sw, (1.0f - cy/cw) * 0.5f * sh};
+    Matrix proj = MatrixPerspective(cam.fovy * DEG2RAD, (float)SCR_W / SCR_H, 0.01f, 1000.0f);
+    cachedMVP = MatrixMultiply(view, proj);
 }
 
-static void DrawFaceNumbers(const Matrix& xform, Camera3D cam, int sw, int sh) {
+static Vector2 Project3D(Vector3 pos) {
+    float x = pos.x, y = pos.y, z = pos.z;
+    float cx = cachedMVP.m0*x + cachedMVP.m4*y + cachedMVP.m8*z  + cachedMVP.m12;
+    float cy = cachedMVP.m1*x + cachedMVP.m5*y + cachedMVP.m9*z  + cachedMVP.m13;
+    float cw = cachedMVP.m3*x + cachedMVP.m7*y + cachedMVP.m11*z + cachedMVP.m15;
+    if (cw < 0.001f) return {-1000, -1000};
+    return {(cx/cw + 1.0f) * 0.5f * SCR_W, (1.0f - cy/cw) * 0.5f * SCR_H};
+}
+
+// Fake bold: draw text with slight offset for weight
+static void DrawTextBold(const char* text, int x, int y, int sz, Color col) {
+    DrawText(text, x+1, y, sz, col);
+    DrawText(text, x, y+1, sz, col);
+    DrawText(text, x, y, sz, col);
+}
+
+static void DrawDieFaceNumbers(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
-    for (int i = 0; i < dieNumVerts; i++)
-        wv[i] = Vector3Transform(dieVerts[i], xform);
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
 
-    Vector3 camPos = cam.position;
+    for (int f = 0; f < d.numFaces; f++) {
+        if (d.faces[f].value < 0) continue;
+        const Face& face = d.faces[f];
 
-    for (int f = 0; f < dieNumFaces; f++) {
-        if (dieFaces[f].value < 0) continue;
-        const Face& face = dieFaces[f];
-
-        // Face center
         Vector3 center = {0, 0, 0};
         for (int i = 0; i < face.count; i++)
             center = Vector3Add(center, wv[face.idx[i]]);
         center = Vector3Scale(center, 1.0f / face.count);
 
-        // Only draw if face is roughly toward camera
         Vector3 n = FaceNormal(wv, face);
         Vector3 toCamera = Vector3Normalize(Vector3Subtract(camPos, center));
         if (Vector3DotProduct(n, toCamera) < 0.15f) continue;
 
-        Vector2 sp = Project3D(center, cam, sw, sh);
-        if (sp.x < 0 || sp.x > sw || sp.y < 0 || sp.y > sh) continue;
+        Vector2 sp = Project3D(center);
+        if (sp.x < 0 || sp.x > SCR_W || sp.y < 0 || sp.y > SCR_H) continue;
 
         char buf[8];
         snprintf(buf, sizeof(buf), "%d", face.value);
-        int fontSize = 14;
+        int fontSize = 22;
         int tw = MeasureText(buf, fontSize);
-        DrawText(buf, (int)sp.x - tw/2, (int)sp.y - fontSize/2,
-                 fontSize, (Color){30, 30, 40, 255});
+        DrawTextBold(buf, (int)sp.x - tw/2, (int)sp.y - fontSize/2,
+                     fontSize, (Color){20, 20, 30, 255});
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Hot bar UI
+// ═══════════════════════════════════════════════════════════════════
+
+static void DrawHotbar() {
+    const int cellW = 110, cellH = 38;
+    const int totalW = NUM_DICE_TYPES * cellW;
+    const int x0 = (SCR_W - totalW) / 2;
+    const int y0 = SCR_H - cellH - 8;
+
+    for (int i = 0; i < NUM_DICE_TYPES; i++) {
+        int cx = x0 + i * cellW;
+        bool sel = (i == hotbarSel);
+
+        Color bg = sel ? (Color){60, 70, 90, 255} : (Color){35, 40, 50, 255};
+        DrawRectangle(cx + 1, y0 + 1, cellW - 2, cellH - 2, bg);
+
+        if (sel)
+            DrawRectangleLines(cx, y0, cellW, cellH, (Color){255, 220, 50, 255});
+
+        const char* name = DICE_DEFS[i].name;
+        int cnt = hotbarCount[i];
+        Color txtCol = sel ? (Color){255, 255, 255, 255} : (Color){180, 180, 180, 255};
+
+        if (cnt > 0) {
+            const char* label = TextFormat("%s x%d", name, cnt);
+            int tw = MeasureText(label, 16);
+            DrawText(label, cx + (cellW - tw)/2, y0 + 10, 16, txtCol);
+        } else {
+            int tw = MeasureText(name, 16);
+            DrawText(name, cx + (cellW - tw)/2, y0 + 10, 16,
+                     sel ? (Color){140, 140, 140, 255} : (Color){80, 80, 80, 255});
+        }
+    }
+
+    const char* hint = "Y:+  X:-  L2/R2:Select  A:Throw";
+    int hw = MeasureText(hint, 12);
+    DrawText(hint, (SCR_W - hw)/2, y0 - 16, 12, (Color){120, 120, 120, 255});
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -458,35 +581,50 @@ static void DrawFaceNumbers(const Matrix& xform, Camera3D cam, int sw, int sh) {
 // ═══════════════════════════════════════════════════════════════════
 
 int main(void) {
-    const int screenWidth = 750;
-    const int screenHeight = 560;
-
     srand((unsigned)time(nullptr));
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
-    InitWindow(screenWidth, screenHeight, "Dice Roller - MMF");
+    InitWindow(SCR_W, SCR_H, "Dice Roller - MMF");
     SetTargetFPS(30);
 
-    int currentType = 1; // start on d6
-    SetupDieGeometry(currentType);
     InitPhysics();
-    ThrowDie();
+    ThrowAll();
 
-    float camDist = 5.0f, camYaw = 45.0f, camPitch = 35.0f;
+    float camDist = 7.0f, camYaw = 45.0f, camPitch = 40.0f;
     Camera3D camera = {0};
     camera.up = {0, 1, 0};
     camera.fovy = 45.0f;
     camera.projection = CAMERA_PERSPECTIVE;
 
-    int rolledValue = -1;
-    int settledFrames = 0;
-    bool showResult = false;
+    bool allSettled = false;
+    int totalResult = 0;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         if (dt > 0 && dt < 0.1f)
             world->stepSimulation(dt, 4, 1.0f/120.0f);
 
-        // ── Controls ──
+        // Hot bar navigation
+        if (IsKeyPressed(MMF_L2)) hotbarSel = (hotbarSel + NUM_DICE_TYPES - 1) % NUM_DICE_TYPES;
+        if (IsKeyPressed(MMF_R2)) hotbarSel = (hotbarSel + 1) % NUM_DICE_TYPES;
+
+        if (IsKeyPressed(MMF_Y)) {
+            int total = 0;
+            for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
+            if (total < MAX_ACTIVE_DICE && hotbarCount[hotbarSel] < 6)
+                hotbarCount[hotbarSel]++;
+        }
+        if (IsKeyPressed(MMF_X)) {
+            if (hotbarCount[hotbarSel] > 0) hotbarCount[hotbarSel]--;
+        }
+
+        // Throw all configured dice
+        if (IsKeyPressed(MMF_A)) {
+            ThrowAll();
+            allSettled = false;
+            totalResult = 0;
+        }
+
+        // Camera orbit
         if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= 90.0f * dt;
         if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += 90.0f * dt;
         if (IsKeyDown(MMF_DPAD_UP))    camPitch += 90.0f * dt;
@@ -494,21 +632,10 @@ int main(void) {
         if (IsKeyDown(MMF_L1))         camDist  -= 5.0f * dt;
         if (IsKeyDown(MMF_R1))         camDist  += 5.0f * dt;
 
-        if (IsKeyPressed(MMF_A)) {
-            ThrowDie();
-            rolledValue = -1; settledFrames = 0; showResult = false;
-        }
-        if (IsKeyPressed(MMF_B)) {
-            currentType = (currentType + 1) % NUM_DICE_TYPES;
-            SetupDieGeometry(currentType);
-            ThrowDie();
-            rolledValue = -1; settledFrames = 0; showResult = false;
-        }
-
         if (camPitch > 85) camPitch = 85;
-        if (camPitch < -10) camPitch = -10;
-        if (camDist < 2) camDist = 2;
-        if (camDist > 15) camDist = 15;
+        if (camPitch < 5) camPitch = 5;
+        if (camDist < 3) camDist = 3;
+        if (camDist > 20) camDist = 20;
 
         float yr = camYaw * DEG2RAD, pr = camPitch * DEG2RAD;
         camera.position = {
@@ -518,54 +645,74 @@ int main(void) {
         };
         camera.target = {0, 0.5f, 0};
 
-        // ── Physics transform ──
-        float m[16];
-        dieBody->getWorldTransform().getOpenGLMatrix(m);
-        Matrix xform = {
-            m[0], m[4], m[8],  m[12],
-            m[1], m[5], m[9],  m[13],
-            m[2], m[6], m[10], m[14],
-            m[3], m[7], m[11], m[15],
-        };
-
-        // ── Settle detection ──
-        if (!showResult && IsDieSettled()) {
-            if (++settledFrames > 30) {
-                rolledValue = GetFaceUpValue(xform, DICE_DEFS[currentType].invertUpside);
-                showResult = true;
+        // Per-die settle detection
+        if (!allSettled && numDice > 0) {
+            bool all = true;
+            for (int i = 0; i < numDice; i++) {
+                ActiveDie& d = dice[i];
+                if (!d.settled) {
+                    if (IsDieSettled(d)) {
+                        if (++d.settledFrames > 30) {
+                            Matrix xf = GetDieTransform(d);
+                            d.rolledValue = GetFaceUpValue(d, xf);
+                            d.settled = true;
+                        }
+                    } else {
+                        d.settledFrames = 0;
+                    }
+                }
+                if (!d.settled) all = false;
             }
-        } else if (!showResult) {
-            settledFrames = 0;
+            if (all) {
+                allSettled = true;
+                totalResult = 0;
+                for (int i = 0; i < numDice; i++)
+                    if (dice[i].rolledValue >= 0) totalResult += dice[i].rolledValue;
+            }
         }
 
-        // ── Draw ──
+        // ── Draw 3D ──
         BeginDrawing();
         ClearBackground({20, 24, 30, 255});
 
         BeginMode3D(camera);
         rlDisableBackfaceCulling();
-        DrawDie(xform);
+
+        for (int i = 0; i < numDice; i++) {
+            Matrix xf = GetDieTransform(dice[i]);
+            DrawOneDie(dice[i], xf);
+        }
+
         rlEnableBackfaceCulling();
 
-        // Floor
         DrawTriangle3D({-10,0,-10}, {10,0,-10}, {10,0,10}, {40,50,60,255});
         DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10},{40,50,60,255});
         DrawGrid(20, 1.0f);
         EndMode3D();
 
-        // Face numbers (2D overlay)
-        DrawFaceNumbers(xform, camera, screenWidth, screenHeight);
+        // ── Face numbers (2D overlay) ──
+        CacheMVP(camera);
+        for (int i = 0; i < numDice; i++) {
+            Matrix xf = GetDieTransform(dice[i]);
+            DrawDieFaceNumbers(dice[i], xf, camera.position);
+        }
 
-        // HUD
-        DrawText(TextFormat("Dice: %s", DICE_DEFS[currentType].name),
-                 20, 20, 20, {230, 230, 230, 255});
+        // ── Result display ──
+        if (allSettled && numDice > 0) {
+            char resultBuf[128];
+            int pos = 0;
+            for (int i = 0; i < numDice; i++) {
+                if (i > 0) pos += snprintf(resultBuf + pos, sizeof(resultBuf) - pos, " + ");
+                pos += snprintf(resultBuf + pos, sizeof(resultBuf) - pos, "%d", dice[i].rolledValue);
+            }
+            if (numDice > 1)
+                snprintf(resultBuf + pos, sizeof(resultBuf) - pos, " = %d", totalResult);
 
-        if (showResult && rolledValue >= 0)
-            DrawText(TextFormat("Rolled: %d", rolledValue),
-                     screenWidth/2 - 60, 20, 30, {255, 220, 50, 255});
+            int rw = MeasureText(resultBuf, 24);
+            DrawTextBold(resultBuf, (SCR_W - rw)/2, 16, 24, (Color){255, 220, 50, 255});
+        }
 
-        DrawText("[A] Throw  [B] Type  [D-Pad] Orbit  [L1/R1] Zoom",
-                 20, screenHeight - 30, 14, {160, 160, 160, 255});
+        DrawHotbar();
 
         if (getenv("RAYLIB_MMF_SHOWFPS"))
             DrawFPS(20, 50);

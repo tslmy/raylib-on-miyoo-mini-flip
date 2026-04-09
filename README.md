@@ -4,6 +4,8 @@ A **dice roller** for [Miyoo Mini Flip (MMF)][mm] running OnionOS — powered by
 
 Supports all standard polyhedral dice: **d4**, **d6**, **d8**, **d10**, **d12**, **d20**. Each die falls with realistic physics (gravity, bouncing, friction) and the rolled value is detected automatically once the die settles.
 
+Use the **hot bar** at the bottom of the screen to configure your throw: select a dice type with L2/R2, adjust the count with Y/X (up to 12 dice total), then press A to throw them all at once. Dice are colored with random pastel shades.
+
 <img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
 
 This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
@@ -99,6 +101,12 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 - This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
 - Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
-- **Controls**: A throws the die, B cycles dice type (d4→d6→d8→d10→d12→d20), D-Pad orbits the camera, L1/R1 zooms. Menu or Power quits.
+- **Controls**:
+  - **A**: Throw all configured dice
+  - **L2 / R2**: Select dice type on the hot bar
+  - **Y / X**: Increase / decrease count of the selected dice type
+  - **D-Pad**: Orbit camera
+  - **L1 / R1**: Zoom in / out
+  - **Menu** or **Power**: Quit
 
 [bt]: https://github.com/bulletphysics/bullet3
