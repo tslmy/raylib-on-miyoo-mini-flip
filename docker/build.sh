@@ -15,12 +15,27 @@ test -d "$RAYLIB_DIR/src" || { echo "Raylib source not found at $RAYLIB_DIR/src"
 test -d "$SYSROOT" || { echo "MMF sysroot not found at $SYSROOT" >&2; exit 1; }
 
 PLATFORM="${RAYLIB_PLATFORM:-PLATFORM_MEMORY}"
-GRAPHICS="${RAYLIB_GRAPHICS:-GRAPHICS_API_OPENGL_SOFTWARE}"
+GRAPHICS="${RAYLIB_GRAPHICS:-GRAPHICS_API_OPENGL_11}"
 
+TINYGL_DIR=/build/src/third_party/tinygl
+MMF_ARCH_FLAGS="-march=armv7-a -mfpu=neon-vfpv4"
+
+# ---------- Build TinyGL ----------
+echo "------ Building TinyGL ------"
+make -C "$TINYGL_DIR/src" clean || true
+# Compile all TinyGL .o files (skip the archive step — its Makefile hardcodes `ar`).
+TINYGL_OBJS="api.o list.o vertex.o init.o matrix.o texture.o misc.o clear.o light.o clip.o select.o get.o zbuffer.o zline.o ztriangle.o zmath.o image_util.o msghandling.o arrays.o specbuf.o memory.o ztext.o zraster.o accum.o zpostprocess.o"
+for obj in $TINYGL_OBJS; do
+  src="$TINYGL_DIR/src/$(echo "$obj" | sed 's/\.o$/.c/')"
+  $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS -Wno-unused-function -c "$src" -o "$TINYGL_DIR/src/$obj"
+done
+(cd "$TINYGL_DIR/src" && rm -f libTinyGL.a && $AR rcs libTinyGL.a $TINYGL_OBJS)
+
+# ---------- Build raylib ----------
 cd "$RAYLIB_DIR/src"
-# Rebuild raylib with the software renderer + MMF framebuffer hooks.
 make clean || true
-RAYLIB_CFLAGS="-fno-stack-protector -DRAYLIB_MMF_FB"
+# TinyGL provides <GL/gl.h>; put its include path first so raylib picks it up.
+RAYLIB_CFLAGS="-fno-stack-protector -DRAYLIB_MMF_FB -DRAYLIB_USE_TINYGL $MMF_ARCH_FLAGS -I$TINYGL_DIR/include"
 echo "------ Building raylib ($PLATFORM, $GRAPHICS) ------"
 make \
   PLATFORM="$PLATFORM" \
@@ -51,23 +66,25 @@ for dir in $SYSROOT_DIRS; do
 done
 
 # Compile with MMF headers; keep code size down via section garbage collection.
-CFLAGS="-I$RAYLIB_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector"
+# Pass the same arch flags as the raylib build so the ABI matches.
+CFLAGS="-I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
 # Link against the MMF sysroot to keep glibc compatibility.
 LDFLAGS="--sysroot=$SYSROOT $SYSROOT_LDFLAGS -Wl,--gc-sections $RPATH_LINKS"
-LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src"
-# Static raylib + standard libs.
-LIBS="-lraylib -lm -lpthread -ldl -lc -lgcc_s -lgcc"
+LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src"
 
 mkdir -p "$OUT_DIR"
 
-# Build app + stat shim (sysroot lacks libc_nonshared.a).
+# Build app + stat shim + TinyGL stubs (sysroot lacks libc_nonshared.a).
 $CC $CFLAGS -c -o "$OUT_DIR/main.o" "$SRC_DIR/src/main.c"
 $CC $CFLAGS -c -o "$OUT_DIR/stat_shim.o" "$SRC_DIR/src/stat_shim.c"
+$CC $CFLAGS -c -o "$OUT_DIR/tinygl_stubs.o" "$SRC_DIR/src/tinygl_stubs.c"
 
 $CC -o "$OUT_DIR/raylib-cube" \
   "$OUT_DIR/main.o" \
   "$OUT_DIR/stat_shim.o" \
-  $LDFLAGS $LIBS
+  $LDFLAGS \
+  -Wl,--start-group -lraylib -lTinyGL "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
+  -lm -lpthread -ldl -lc -lgcc_s -lgcc
 
 # Strip reduces binary size (optional).
 if [ -n "${STRIP:-}" ]; then
@@ -79,5 +96,11 @@ cp -f "$ASSETS_DIR/launch.sh" "$OUT_DIR/launch.sh"
 cp -f "$ASSETS_DIR/config.json" "$OUT_DIR/config.json"
 
 test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.png"
+
+# Bundle MI GFX libs when available (for hardware blit on MMF).
+if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
+  mkdir -p "$OUT_DIR/libs"
+  cp -f "$SRC_DIR/third_party/mi/lib/"*.so "$OUT_DIR/libs/" 2>/dev/null || true
+fi
 
 echo "Build complete: $OUT_DIR/raylib-cube"

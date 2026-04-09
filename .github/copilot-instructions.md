@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-Cross-compiles a [Raylib](https://www.raylib.com/) 3D demo (spinning cube) for the **Miyoo Mini Flip (MMF)** handheld running OnionOS. Uses `PLATFORM_MEMORY` + `GRAPHICS_API_OPENGL_SOFTWARE` and blits directly to `/dev/fb0` — no EGL, no SDL, no DRM (none of those work on MMF).
+Cross-compiles a [Raylib](https://www.raylib.com/) 3D demo (spinning cube) for the **Miyoo Mini Flip (MMF)** handheld running OnionOS. Uses `PLATFORM_MEMORY` + `GRAPHICS_API_OPENGL_11` with [TinyGL](https://github.com/C-Chads/tinygl) (C-Chads fork) as the software OpenGL 1.1 renderer, blitting directly to `/dev/fb0` — no EGL, no SDL, no DRM (none of those work on MMF).
 
 ## Build Commands
 
@@ -26,7 +26,7 @@ just clean
 
 **Override build flags** via env vars before `just build`:
 ```sh
-RAYLIB_PLATFORM=PLATFORM_MEMORY RAYLIB_GRAPHICS=GRAPHICS_API_OPENGL_SOFTWARE just build
+RAYLIB_PLATFORM=PLATFORM_MEMORY RAYLIB_GRAPHICS=GRAPHICS_API_OPENGL_11 just build
 ```
 
 There is no test suite.
@@ -39,15 +39,29 @@ There is no test suite.
 just build
   → docker build (ubuntu:22.04 + arm-linux-gnueabihf toolchain)
   → docker run → docker/build.sh
-      → make -C third_party/raylib/src  (static libraylib.a, PLATFORM_MEMORY + software renderer)
-      → arm-linux-gnueabihf-gcc src/main.c src/stat_shim.c → dist/raylib-cube
+      → compile TinyGL .o files + ar rcs libTinyGL.a
+      → make -C third_party/raylib/src  (static libraylib.a, PLATFORM_MEMORY + GL 1.1)
+      → arm-linux-gnueabihf-gcc src/{main,stat_shim,tinygl_stubs}.c → dist/raylib-cube
       → cp assets/{launch.sh,config.json,icon.png} → dist/
 ```
+
+### Renderer: TinyGL
+
+`third_party/tinygl` (git submodule) is the [C-Chads TinyGL fork](https://github.com/C-Chads/tinygl) — a fast integer/fixed-point OpenGL 1.1 software renderer. It replaces raylib's built-in `rlsw` software renderer which was too slow on MMF (5–8 FPS).
+
+Key integration points:
+- Raylib is built with `GRAPHICS_API_OPENGL_11` (not `_SOFTWARE`). Its `rlgl.h` includes `<GL/gl.h>` which resolves to TinyGL's `include/GL/gl.h` via `-I` flag.
+- TinyGL provides most `gl*` symbols. Missing ones (e.g. `glOrtho`, `glColor4ub`, `glScissor`) are in `src/tinygl_stubs.c`.
+- In `rcore_memory.c`, `ZB_open()` + `glInit()` initialise TinyGL with the platform pixel buffer (zero-copy: TinyGL renders directly into MMA-allocated memory when MI GFX is active).
+- TinyGL pixel format is ARGB8888 (`0x00RRGGBB`), matching `E_MI_GFX_FMT_ARGB8888` — no pixel conversion needed for the MI GFX blit path.
+- TinyGL requires render width to be a multiple of 4 (`xsize & ~3`); this is enforced in `InitPlatform()`.
 
 ### Raylib submodule is a fork
 
 `third_party/raylib` tracks **`tslmy/raylib` branch `mmf`** (not upstream). The fork patches `src/platforms/rcore_memory.c` to:
 - Open `/dev/fb0` and blit the software framebuffer using `FBIOPAN_DISPLAY` for double-buffering.
+- Initialise TinyGL ZBuffer and pass pixel buffer for zero-copy rendering (gated on `RAYLIB_USE_TINYGL`).
+- Hardware-accelerate blit to display via MI GFX 2D engine (gated on `RAYLIB_MMF_FB` + env var).
 - Poll `/dev/input/event*` (evdev) for quit keys: `MENU`, `HOME`, `POWER`, `ESC`, `Q`, `ENTER`, `BACKSPACE`.
 
 Never replace the submodule with upstream raylib — the MMF-specific patches are essential.
@@ -60,6 +74,12 @@ Never replace the submodule with upstream raylib — the MMF-specific patches ar
 
 The MMF sysroot lacks `libc_nonshared.a`, so `stat()` is shimmed by forwarding to `__xstat()`. This file must always be compiled and linked alongside `main.c`.
 
+### `tinygl_stubs.c`
+
+Provides GL functions missing from TinyGL that raylib references:
+- **Real implementations**: `glOrtho` (orthographic projection matrix), `glColor4ub` (wraps `glColor4f`), `glVertex2i` (wraps `glVertex3f`)
+- **No-op stubs**: `glDepthFunc`, `glLineWidth`, `glColorMask`, `glScissor`, `glPixelStorei`, `glTexSubImage2D`, `glGetTexImage`, `glDrawElements`
+
 ### OnionOS app bundle (`dist/`)
 
 `deploy` rsync's `dist/` to `/mnt/SDCARD/App/raylib-cube/` on the device. The bundle requires:
@@ -71,11 +91,12 @@ The MMF sysroot lacks `libc_nonshared.a`, so `stat()` is shimmed by forwarding t
 ## Key Conventions
 
 - **Target**: `armv7-unknown-linux-gnueabihf` (armhf), MMF native resolution **750×560**.
-- **Static linking**: raylib is always linked statically (`RAYLIB_LIBTYPE=STATIC`). Dynamic libs are only used for system libc/libm/libpthread/libdl.
-- **Raylib build define**: `RAYLIB_MMF_FB` is passed via `CUSTOM_CFLAGS` when building raylib. Code in `rcore_memory.c` gates MMF-specific framebuffer logic on this define.
+- **Static linking**: raylib and TinyGL are always linked statically. Dynamic libs are only used for system libc/libm/libpthread/libdl.
+- **Link order**: `-Wl,--start-group -lraylib -lTinyGL tinygl_stubs.o -Wl,--end-group` (circular deps between raylib→TinyGL→stubs→TinyGL).
+- **Raylib build defines**: `RAYLIB_MMF_FB` (fb0/MI GFX support), `RAYLIB_USE_TINYGL` (TinyGL ZBuffer integration). Both passed via `CUSTOM_CFLAGS`.
 - **Runtime env vars** (set in `assets/launch.sh`):
   - `RAYLIB_MMF_SHOWFPS=1` — overlay FPS counter (also toggled in `main.c` via `getenv`)
   - `RAYLIB_MMF_MIGFX=1` — enable MI GFX hardware blit if libs are present in `dist/libs/`
   - `RAYLIB_MMF_SCALE=2` — framebuffer scale factor
-- **Compiler flags**: `-fno-stack-protector` (required for MMF ABI), `-ffunction-sections -fdata-sections -Wl,--gc-sections` (size reduction).
+- **Compiler flags**: `-fno-stack-protector` (required for MMF ABI), `-march=armv7-a -mfpu=neon-vfpv4` (Cortex-A7 NEON), `-ffunction-sections -fdata-sections -Wl,--gc-sections` (size reduction).
 - **Shell**: `justfile` uses `zsh` (`set shell := ["zsh", "-c"]`).
