@@ -6,6 +6,7 @@
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
+#include <GL/gl.h>  // TinyGL — for direct glBlendFunc/glEnable(GL_BLEND) calls
 #include "btBulletDynamicsCommon.h"
 
 // MMF button → raylib key constants (from evdev probe)
@@ -534,12 +535,16 @@ static void FlushSortedTris(Vector3 camPos) {
               [](const SortTri& a, const SortTri& b) { return a.dist > b.dist; });
 
     // Draw all sorted transparent triangles
-    BeginBlendMode(BLEND_ALPHA);
+    // NOTE: BeginBlendMode/EndBlendMode are no-ops in GL1.1 mode
+    // (rlSetBlendMode is guarded by GRAPHICS_API_OPENGL_33/ES2),
+    // so we call the GL functions directly.
+    rlEnableColorBlend();
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     rlDisableDepthMask();
     for (int i = 0; i < triCount; i++)
         DrawTriangle3D(triBuffer[i].v[0], triBuffer[i].v[1], triBuffer[i].v[2], triBuffer[i].col);
     rlEnableDepthMask();
-    EndBlendMode();
+    rlDisableColorBlend();
 
     triCount = 0;
 }
@@ -824,12 +829,13 @@ int main(void) {
         FlushSortedTris(camera.position);
 
         // Draw face number decals on the die surfaces (3D, with blending)
-        BeginBlendMode(BLEND_ALPHA);
+        rlEnableColorBlend();
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawDieNumberDecals(dice[i], xf, camera.position);
         }
-        EndBlendMode();
+        rlDisableColorBlend();
         rlEnableBackfaceCulling();
 
         EndMode3D();
