@@ -75,16 +75,16 @@ LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src"
 mkdir -p "$OUT_DIR"
 
 # Build app + stat shim + TinyGL stubs (sysroot lacks libc_nonshared.a).
-$CC $CFLAGS -c -o "$OUT_DIR/main.o" "$SRC_DIR/src/main.c"
+$CXX $CFLAGS -c -o "$OUT_DIR/main.o" "$SRC_DIR/src/main.cpp"
 $CC $CFLAGS -c -o "$OUT_DIR/stat_shim.o" "$SRC_DIR/src/stat_shim.c"
 $CC $CFLAGS -c -o "$OUT_DIR/tinygl_stubs.o" "$SRC_DIR/src/tinygl_stubs.c"
 
-$CC -o "$OUT_DIR/raylib-cube" \
+$CXX -o "$OUT_DIR/raylib-cube" \
   "$OUT_DIR/main.o" \
   "$OUT_DIR/stat_shim.o" \
   $LDFLAGS \
   -Wl,--start-group -lraylib -lTinyGL "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
-  -lm -lpthread -ldl -lc -lgcc_s -lgcc
+  -lm -lpthread -ldl -lc -lgcc_s -lgcc -lstdc++
 
 # Build evdev probe tool (standalone, no raylib dependency).
 $CC -O2 -fno-stack-protector $MMF_ARCH_FLAGS --sysroot=$SYSROOT $SYSROOT_LDFLAGS $RPATH_LINKS \
