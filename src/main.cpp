@@ -755,7 +755,11 @@ int main(void) {
 
         // ── Draw 3D ──
         BeginDrawing();
-        ClearBackground({20, 24, 30, 255});
+        ClearBackground(BLACK);
+        // Vertical gradient sky: warm dark bottom → cooler blue-gray top
+        DrawRectangleGradientV(0, 0, SCR_W, SCR_H,
+                               {50, 58, 78, 255},   // top: dim blue-gray
+                               {22, 20, 18, 255});   // bottom: warm dark
 
         BeginMode3D(camera);
 
