@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
@@ -19,8 +20,16 @@
 #define MMF_L1          69   // KEY_E
 #define MMF_R1          84   // KEY_T
 
-int main(void) {
-    const int screenWidth = 750;
+int main(int argc, char **argv) {
+    // --screenshot N: run N frames headlessly, save screenshot.png, exit
+    int screenshotFrames = 0;
+    int i;
+    for (i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            screenshotFrames = atoi(argv[++i]);
+    }
+
+    const int screenWidth = 752;
     const int screenHeight = 560;
 
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
@@ -166,6 +175,15 @@ int main(void) {
         if (getenv("RAYLIB_MMF_SHOWFPS") != NULL)
             DrawFPS(20, 50);
         EndDrawing();
+
+        // Headless screenshot mode: capture after N frames and exit
+        if (screenshotFrames > 0) {
+            static int frameCounter = 0;
+            if (++frameCounter >= screenshotFrames) {
+                TakeScreenshot("screenshot.png");
+                break;
+            }
+        }
     }
 
     CloseWindow();
