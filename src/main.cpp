@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include "raylib.h"
 #include "rlgl.h"
@@ -100,8 +101,15 @@ static void CleanupPhysics() {
     delete collisionConfig;
 }
 
-int main(void) {
-    const int screenWidth = 750;
+int main(int argc, char **argv) {
+    // --screenshot N: run N frames headlessly, save screenshot.png, exit
+    int screenshotFrames = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            screenshotFrames = atoi(argv[++i]);
+    }
+
+    const int screenWidth = 752;
     const int screenHeight = 560;
 
     srand((unsigned)time(nullptr));
@@ -240,6 +248,15 @@ int main(void) {
         if (getenv("RAYLIB_MMF_SHOWFPS"))
             DrawFPS(20, 50);
         EndDrawing();
+
+        // Headless screenshot mode: capture after N frames and exit
+        if (screenshotFrames > 0) {
+            static int frameCounter = 0;
+            if (++frameCounter >= screenshotFrames) {
+                TakeScreenshot("screenshot.png");
+                break;
+            }
+        }
     }
 
     CleanupPhysics();
