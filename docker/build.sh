@@ -22,12 +22,12 @@ MMF_ARCH_FLAGS="-march=armv7-a -mfpu=neon-vfpv4"
 
 # ---------- Build TinyGL ----------
 echo "------ Building TinyGL ------"
-make -C "$TINYGL_DIR/src" clean || true
+rm -f "$TINYGL_DIR"/src/*.o "$TINYGL_DIR"/src/libTinyGL.a
 # Compile all TinyGL .o files (skip the archive step — its Makefile hardcodes `ar`).
-TINYGL_OBJS="api.o list.o vertex.o init.o matrix.o texture.o misc.o clear.o light.o clip.o select.o get.o zbuffer.o zline.o ztriangle.o zmath.o image_util.o msghandling.o arrays.o specbuf.o memory.o ztext.o zraster.o accum.o zpostprocess.o"
+TINYGL_OBJS="api.o list.o vertex.o init.o matrix.o texture.o misc.o clear.o light.o clip.o select.o get.o zbuffer.o zline.o ztriangle.o zmath.o image_util.o msghandling.o arrays.o specbuf.o memory.o ztext.o zraster.o zpostprocess.o"
 for obj in $TINYGL_OBJS; do
   src="$TINYGL_DIR/src/$(echo "$obj" | sed 's/\.o$/.c/')"
-  $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS -Wno-unused-function -c "$src" -o "$TINYGL_DIR/src/$obj"
+  $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS -Wno-unused-function -I"$TINYGL_DIR/include" -c "$src" -o "$TINYGL_DIR/src/$obj"
 done
 (cd "$TINYGL_DIR/src" && rm -f libTinyGL.a && $AR rcs libTinyGL.a $TINYGL_OBJS)
 

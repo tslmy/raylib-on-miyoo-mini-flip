@@ -1,7 +1,7 @@
 /*
  * tinygl_stubs.c — GL functions missing from TinyGL that raylib requires.
  *
- * TinyGL (C-Chads fork) provides a fast OpenGL 1.1 subset but omits
+ * TinyGL (jserv fork) provides a fast OpenGL 1.1 subset but omits
  * several entry points raylib references. This file supplies them:
  *   - Real implementations where correctness matters (glOrtho, glColor4ub, glVertex2i)
  *   - No-op stubs where the feature can be safely ignored on this platform
