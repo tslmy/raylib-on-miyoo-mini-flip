@@ -23,7 +23,7 @@
 #define MMF_R1          84   // KEY_T
 #define MMF_R2          259  // KEY_BACKSPACE
 
-static const int SCR_W = 750;
+static const int SCR_W = 752;
 static const int SCR_H = 560;
 
 static float RandF(float lo, float hi) {
