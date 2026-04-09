@@ -1,6 +1,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include "raylib.h"
 #include "rlgl.h"
@@ -825,7 +826,14 @@ static void DrawHotbar() {
 // Main
 // ═══════════════════════════════════════════════════════════════════
 
-int main(void) {
+int main(int argc, char **argv) {
+    // --screenshot N: run N frames headlessly, save screenshot.png, exit
+    int screenshotFrames = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
+            screenshotFrames = atoi(argv[++i]);
+    }
+
     srand((unsigned)time(nullptr));
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
     InitWindow(SCR_W, SCR_H, "Dice Roller - MMF");
@@ -996,6 +1004,15 @@ int main(void) {
         rlDisableColorBlend();
 
         EndDrawing();
+
+        // Headless screenshot mode: capture after N frames and exit
+        if (screenshotFrames > 0) {
+            static int frameCounter = 0;
+            if (++frameCounter >= screenshotFrames) {
+                TakeScreenshot("screenshot.png");
+                break;
+            }
+        }
     }
 
     UnloadTexture(numberAtlas);
