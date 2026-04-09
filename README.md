@@ -57,7 +57,7 @@ Raylib's [`PLATFORM_MEMORY`][pm] provides a minimal platform layer. Our [Raylib 
 - **MI GFX hardware blit** (primary path) — uses the SSD202D's 2D blitter for format conversion and display
 - **CPU blit fallback** — manual ARGB→framebuffer conversion when MI GFX is unavailable
 - **TinyGL ZBuffer integration** — direct rendering into MMA memory
-- **Input polling** via `/dev/input/event*` for quit keys
+- **Input polling** via `/dev/input/event*` with full evdev→raylib key translation for all 16 MMF buttons
 
 ### Display pipeline
 
@@ -82,8 +82,9 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 ## Repo layout
 
-- `src/main.c`: Demo program (spinning cube with FPS counter)
+- `src/main.c`: Demo program (spinning cube with orbit camera control)
 - `src/tinygl_stubs.c`: GL functions missing from TinyGL that Raylib requires
+- `src/evdev_probe.c`: Diagnostic tool to verify MMF button→evdev keycodes on device
 - `docker/`: Cross-compile toolchain
 - `third_party/raylib`: Raylib fork (`tslmy/raylib`, branch `mmf`)
 - `third_party/tinygl`: TinyGL fork (`tslmy/tinygl`, branch `mmf`)
@@ -95,4 +96,4 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 - This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
 - Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
-- Quit: press `MENU`, `HOME`, `POWER`, `ESC`, `Q`, `ENTER`, or `BACKSPACE`.
+- **Controls**: D-Pad orbits the camera, L1/R1 zooms in/out, A resets the view. Menu or Power quits.
