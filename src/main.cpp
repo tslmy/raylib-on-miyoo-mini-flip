@@ -251,6 +251,7 @@ static const Color PASTEL2[] = {
 // ═══════════════════════════════════════════════════════════════════
 
 static const float DIE_RADIUS = 0.7f;
+static const int DICE_ALPHA = 200;  // ~78% opacity — enough transparency to see through, vivid enough to read
 #define MAX_ACTIVE_DICE 12
 
 struct ActiveDie {
@@ -271,7 +272,7 @@ static ActiveDie dice[MAX_ACTIVE_DICE];
 static int numDice = 0;
 
 // Hot bar: per-type counts and selection cursor
-static int hotbarCount[NUM_DICE_TYPES] = {0, 1, 0, 0, 0, 0}; // start 1xd6
+static int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0}; // start 1xd4 + 2xd6 + 1xd8
 static int hotbarSel = 1;
 
 // Debounce for X/Y buttons — ignore repeat presses for N frames
@@ -464,9 +465,8 @@ static void DrawBlobShadow(float px, float py, float pz) {
 
     auto shadowCol = [&](float strength) -> Color {
         float s = intensity * strength;
-        return {(unsigned char)(GROUND_COLOR.r * (1.0f - 0.5f * s)),
-                (unsigned char)(GROUND_COLOR.g * (1.0f - 0.5f * s)),
-                (unsigned char)(GROUND_COLOR.b * (1.0f - 0.5f * s)), 255};
+        unsigned char a = (unsigned char)(s * 90);  // subtle alpha shadow
+        return {0, 0, 0, a};
     };
     Color inner = shadowCol(0.7f);
     Color outer = shadowCol(0.25f);
@@ -522,7 +522,7 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         if (spec < 0) spec = 0;
         spec = spec * spec * spec * spec;
 
-        float diffuse = 0.45f + 0.40f * key + 0.15f * fill;
+        float diffuse = 0.50f + 0.35f * key + 0.15f * fill;
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
 
         float sr = base.r * diffuse * dimFactor + 255.0f * spec * 0.6f;
@@ -540,7 +540,8 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
-        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, 255};
+        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb,
+                     (unsigned char)DICE_ALPHA};
 
         for (int j = 1; j < face.count - 1; j++)
             DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
@@ -841,7 +842,7 @@ int main(int argc, char **argv) {
     InitPhysics();
     ThrowAll();
 
-    float camDist = 7.0f, camYaw = 45.0f, camPitch = 40.0f;
+    float camDist = 9.0f, camYaw = 45.0f, camPitch = 40.0f;
     Camera3D camera = {0};
     camera.up = {0, 1, 0};
     camera.fovy = 45.0f;
@@ -852,6 +853,9 @@ int main(int argc, char **argv) {
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
+        // In screenshot mode, force 30fps-equivalent timestep since headless
+        // renders at hundreds of FPS — otherwise physics barely advances.
+        if (screenshotFrames > 0) dt = 1.0f / 30.0f;
         if (dt > 0 && dt < 0.1f)
             world->stepSimulation(dt, 4, 1.0f/120.0f);
 
@@ -942,30 +946,48 @@ int main(int argc, char **argv) {
         // Opaque geometry first: textured wood floor
         DrawTexturedGround(10.0f, 4.0f);  // 4×4 tile repeats
 
-        // Blob shadows under each die (drawn on ground, before dice)
+        // Enable blend for all transparent geometry (shadows, dice, decals, UI)
+        rlEnableColorBlend();
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // TinyGL's smooth-shaded blend path (TGL_BLEND_FUNC_RGB) hardcodes
+        // alpha=255, ignoring vertex alpha.  GL_FLAT uses the flat blend path
+        // (TGL_BLEND_FUNC) which reads actual vertex alpha from the packed color.
+        glShadeModel(GL_FLAT);
+
+        // Blob shadows (alpha-blended dark overlays on ground)
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawBlobShadow(xf.m12, xf.m13, xf.m14);
         }
 
-        // Draw opaque dice faces with lighting
-        for (int i = 0; i < numDice; i++) {
-            Matrix xf = GetDieTransform(dice[i]);
-            DrawDieFacesLit(dice[i], xf, camera.position);
-        }
+        // Sort dice back-to-front for correct transparency compositing
+        int diceOrder[MAX_ACTIVE_DICE];
+        for (int i = 0; i < numDice; i++) diceOrder[i] = i;
+        for (int i = 0; i < numDice - 1; i++)
+            for (int j = i + 1; j < numDice; j++) {
+                Matrix a = GetDieTransform(dice[diceOrder[i]]);
+                Matrix b = GetDieTransform(dice[diceOrder[j]]);
+                float da = Vector3LengthSqr(Vector3Subtract({a.m12,a.m13,a.m14}, camera.position));
+                float db = Vector3LengthSqr(Vector3Subtract({b.m12,b.m13,b.m14}, camera.position));
+                if (da < db) { int tmp = diceOrder[i]; diceOrder[i] = diceOrder[j]; diceOrder[j] = tmp; }
+            }
 
-        // Enable blend for number decals (texture alpha) and 2D UI text.
-        // NOTE: BeginBlendMode/EndBlendMode are no-ops in GL1.1 mode
-        // (rlSetBlendMode is guarded by GRAPHICS_API_OPENGL_33/ES2),
-        // so we call the GL functions directly.
-        rlEnableColorBlend();
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // Draw semi-transparent dice (depth write off so further dice show through)
+        rlDisableDepthMask();
+        for (int i = 0; i < numDice; i++) {
+            int di = diceOrder[i];
+            Matrix xf = GetDieTransform(dice[di]);
+            DrawDieFacesLit(dice[di], xf, camera.position);
+        }
 
         // Draw face number decals on the die surfaces
         for (int i = 0; i < numDice; i++) {
-            Matrix xf = GetDieTransform(dice[i]);
-            DrawDieNumberDecals(dice[i], xf, camera.position);
+            int di = diceOrder[i];
+            Matrix xf = GetDieTransform(dice[di]);
+            DrawDieNumberDecals(dice[di], xf, camera.position);
         }
+        rlEnableDepthMask();
+        glShadeModel(GL_SMOOTH);  // Restore default shade model
         rlEnableBackfaceCulling();
 
         EndMode3D();
