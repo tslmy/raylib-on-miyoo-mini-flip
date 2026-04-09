@@ -448,6 +448,52 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
+static const Color GROUND_COLOR = {40, 50, 60, 255};
+
+// Draw a dark blob shadow on the ground plane beneath a die.
+// Uses two concentric quads for a subtle soft-edge effect.
+static void DrawBlobShadow(float px, float py, float pz) {
+    const float groundY = 0.002f;
+    float height = (py > 0) ? py : 0;
+    float intensity = 1.0f - height / 8.0f;
+    if (intensity < 0) return;
+
+    float r_inner = 0.6f + height * 0.05f;
+    float r_outer = 1.0f + height * 0.15f;
+
+    auto shadowCol = [&](float strength) -> Color {
+        float s = intensity * strength;
+        return {(unsigned char)(GROUND_COLOR.r - 25 * s),
+                (unsigned char)(GROUND_COLOR.g - 32 * s),
+                (unsigned char)(GROUND_COLOR.b - 38 * s), 255};
+    };
+    Color inner = shadowCol(0.7f);
+    Color outer = shadowCol(0.25f);
+
+    // Inner quad (darker core)
+    DrawTriangle3D({px-r_inner, groundY, pz-r_inner}, {px+r_inner, groundY, pz-r_inner},
+                   {px+r_inner, groundY, pz+r_inner}, inner);
+    DrawTriangle3D({px-r_inner, groundY, pz-r_inner}, {px+r_inner, groundY, pz+r_inner},
+                   {px-r_inner, groundY, pz+r_inner}, inner);
+    // Outer ring (lighter penumbra) — 4 side strips
+    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px+r_outer, groundY, pz-r_outer},
+                   {px+r_inner, groundY, pz-r_inner}, outer);
+    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px+r_inner, groundY, pz-r_inner},
+                   {px-r_inner, groundY, pz-r_inner}, outer);
+    DrawTriangle3D({px+r_inner, groundY, pz-r_inner}, {px+r_outer, groundY, pz-r_outer},
+                   {px+r_outer, groundY, pz+r_outer}, outer);
+    DrawTriangle3D({px+r_inner, groundY, pz-r_inner}, {px+r_outer, groundY, pz+r_outer},
+                   {px+r_inner, groundY, pz+r_inner}, outer);
+    DrawTriangle3D({px-r_inner, groundY, pz+r_inner}, {px+r_inner, groundY, pz+r_inner},
+                   {px+r_outer, groundY, pz+r_outer}, outer);
+    DrawTriangle3D({px-r_inner, groundY, pz+r_inner}, {px+r_outer, groundY, pz+r_outer},
+                   {px-r_outer, groundY, pz+r_outer}, outer);
+    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px-r_inner, groundY, pz-r_inner},
+                   {px-r_inner, groundY, pz+r_inner}, outer);
+    DrawTriangle3D({px-r_outer, groundY, pz-r_outer}, {px-r_inner, groundY, pz+r_inner},
+                   {px-r_outer, groundY, pz+r_outer}, outer);
+}
+
 // Draw lit die face triangles (opaque)
 static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
@@ -774,8 +820,15 @@ int main(void) {
         BeginMode3D(camera);
 
         // Opaque geometry first: ground plane and grid
-        DrawTriangle3D({-10,0,-10}, {10,0,-10}, {10,0,10}, {40,50,60,255});
-        DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10},{40,50,60,255});
+        DrawTriangle3D({-10,0,-10}, {10,0,-10}, {10,0,10}, GROUND_COLOR);
+        DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10}, GROUND_COLOR);
+
+        // Blob shadows under each die (drawn on ground, before dice)
+        for (int i = 0; i < numDice; i++) {
+            Matrix xf = GetDieTransform(dice[i]);
+            DrawBlobShadow(xf.m12, xf.m13, xf.m14);
+        }
+
         DrawGrid(20, 1.0f);
 
         // Draw opaque dice faces with lighting
