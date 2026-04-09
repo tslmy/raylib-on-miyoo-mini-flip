@@ -448,7 +448,8 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
 static const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 static const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
-static const Color GROUND_COLOR = {40, 50, 60, 255};
+// Average floor color — used for shadow blending against the wood texture
+static const Color GROUND_COLOR = {140, 100, 58, 255};
 
 // Draw a dark blob shadow on the ground plane beneath a die.
 // Uses two concentric quads for a subtle soft-edge effect.
@@ -463,9 +464,9 @@ static void DrawBlobShadow(float px, float py, float pz) {
 
     auto shadowCol = [&](float strength) -> Color {
         float s = intensity * strength;
-        return {(unsigned char)(GROUND_COLOR.r - 25 * s),
-                (unsigned char)(GROUND_COLOR.g - 32 * s),
-                (unsigned char)(GROUND_COLOR.b - 38 * s), 255};
+        return {(unsigned char)(GROUND_COLOR.r * (1.0f - 0.5f * s)),
+                (unsigned char)(GROUND_COLOR.g * (1.0f - 0.5f * s)),
+                (unsigned char)(GROUND_COLOR.b * (1.0f - 0.5f * s)), 255};
     };
     Color inner = shadowCol(0.7f);
     Color outer = shadowCol(0.25f);
@@ -547,6 +548,61 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         for (int j = 1; j < face.count - 1; j++)
             DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Procedural hardwood floor texture
+// ═══════════════════════════════════════════════════════════════════
+
+static Texture2D woodTexture;
+
+static void InitWoodTexture() {
+    const int W = 128, H = 128;
+    Image img = GenImageColor(W, H, BLANK);
+    // Warm hardwood palette
+    const float lR = 185, lG = 135, lB = 85;   // light wood
+    const float dR = 110, dG = 68,  dB = 35;   // dark grain
+
+    for (int y = 0; y < H; y++) {
+        for (int x = 0; x < W; x++) {
+            float fx = (float)x / W;
+            float fy = (float)y / H;
+            // Primary grain (runs along X)
+            float grain = sinf(fy * 22.0f + sinf(fx * 7.0f) * 1.8f);
+            // Fine detail
+            float detail = sinf(fy * 55.0f + fx * 2.5f) * 0.2f;
+            // Simple hash noise for roughness
+            int h = ((x * 7919 + y * 104729) ^ 0xDEAD) & 0xFF;
+            float noise = ((float)h / 255.0f - 0.5f) * 0.12f;
+
+            float t = (grain + detail + noise) * 0.5f + 0.5f;
+            if (t < 0) t = 0; if (t > 1) t = 1;
+            t = t * t;  // darken for contrast
+
+            unsigned char r = (unsigned char)(dR + (lR - dR) * t);
+            unsigned char g = (unsigned char)(dG + (lG - dG) * t);
+            unsigned char b = (unsigned char)(dB + (lB - dB) * t);
+            ImageDrawPixel(&img, x, y, {r, g, b, 255});
+        }
+    }
+    woodTexture = LoadTextureFromImage(img);
+    UnloadImage(img);
+}
+
+// Draw ground as textured quad (TinyGL wraps UVs automatically via bitmask)
+static void DrawTexturedGround(float halfSize, float tileRepeat) {
+    rlSetTexture(woodTexture.id);
+    rlBegin(RL_TRIANGLES);
+        rlColor4ub(255, 255, 255, 255);
+        rlTexCoord2f(0, 0);           rlVertex3f(-halfSize, 0, -halfSize);
+        rlTexCoord2f(tileRepeat, 0);   rlVertex3f( halfSize, 0, -halfSize);
+        rlTexCoord2f(tileRepeat, tileRepeat); rlVertex3f( halfSize, 0,  halfSize);
+
+        rlTexCoord2f(0, 0);           rlVertex3f(-halfSize, 0, -halfSize);
+        rlTexCoord2f(tileRepeat, tileRepeat); rlVertex3f( halfSize, 0,  halfSize);
+        rlTexCoord2f(0, tileRepeat);   rlVertex3f(-halfSize, 0,  halfSize);
+    rlEnd();
+    rlSetTexture(0);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -718,6 +774,7 @@ int main(void) {
     SetTargetFPS(30);
 
     InitNumberAtlas();
+    InitWoodTexture();
     InitPhysics();
     ThrowAll();
 
@@ -819,9 +876,8 @@ int main(void) {
 
         BeginMode3D(camera);
 
-        // Opaque geometry first: ground plane and grid
-        DrawTriangle3D({-10,0,-10}, {10,0,-10}, {10,0,10}, GROUND_COLOR);
-        DrawTriangle3D({-10,0,-10}, {10,0,10},  {-10,0,10}, GROUND_COLOR);
+        // Opaque geometry first: textured wood floor and grid
+        DrawTexturedGround(10.0f, 4.0f);  // 4×4 tile repeats
 
         // Blob shadows under each die (drawn on ground, before dice)
         for (int i = 0; i < numDice; i++) {
