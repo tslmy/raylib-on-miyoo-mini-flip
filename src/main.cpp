@@ -264,6 +264,7 @@ struct ActiveDie {
     Face faces[MAX_DIE_FACES];
     int numFaces;
     int rolledValue;
+    int targetValue;  // -1 = random, >=0 = snap to this value after settling
     int settledFrames;
     bool settled;
 };
@@ -274,6 +275,7 @@ static int numDice = 0;
 // Hot bar: per-type counts and selection cursor
 static int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0}; // start 1xd4 + 2xd6 + 1xd8
 static int hotbarSel = 1;
+static int riggedValue = -1;  // -1 = random, >=1 = force all dice to this value
 
 // Debounce for X/Y buttons — ignore repeat presses for N frames
 static const int DEBOUNCE_FRAMES = 12;  // ~0.4s at 30 FPS
@@ -345,6 +347,7 @@ static void ThrowAll() {
             d.typeIdx = t;
             d.baseColor = PASTEL2[rand() % NUM_PASTEL2];
             d.rolledValue = -1;
+            d.targetValue = -1;  // random outcome (B button toggles rigged mode)
             d.settledFrames = 0;
             d.settled = false;
             SetupDieVerts(d);
@@ -439,6 +442,50 @@ static int GetFaceUpValue(const ActiveDie& d, const Matrix& xform) {
         if (dot > bestDot) { bestDot = dot; best = f; }
     }
     return best >= 0 ? d.faces[best].value : -1;
+}
+
+// Rotate the die's physics body so that the face with `targetValue` points up.
+// Like DiceManager.prepareValues in the Three.js version.
+static void SnapDieToValue(ActiveDie& d, int targetValue) {
+    if (targetValue < 0) return;
+
+    // Find face index for target value
+    int targetFace = -1;
+    for (int f = 0; f < d.numFaces; f++) {
+        if (d.faces[f].value == targetValue) { targetFace = f; break; }
+    }
+    if (targetFace < 0) return;
+
+    // Current world transform
+    btTransform xf = d.body->getWorldTransform();
+
+    // Compute face normal in world space
+    Matrix mat = GetDieTransform(d);
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], mat);
+    Vector3 faceN = FaceNormal(wv, d.faces[targetFace]);
+
+    // Target direction: up (or down for inverted dice like d4)
+    bool inv = DICE_DEFS[d.typeIdx].invertUpside;
+    Vector3 upDir = inv ? (Vector3){0,-1,0} : (Vector3){0,1,0};
+
+    // Compute rotation from faceN to upDir
+    Vector3 axis = Vector3CrossProduct(faceN, upDir);
+    float axisLen = Vector3Length(axis);
+    if (axisLen < 0.001f) return;  // already aligned
+    axis = Vector3Scale(axis, 1.0f / axisLen);
+    float angle = acosf(fminf(fmaxf(Vector3DotProduct(faceN, upDir), -1.0f), 1.0f));
+
+    // Apply correction rotation to current orientation
+    btQuaternion correction(btVector3(axis.x, axis.y, axis.z), angle);
+    btQuaternion current = xf.getRotation();
+    xf.setRotation(correction * current);
+
+    d.body->setWorldTransform(xf);
+    d.body->getMotionState()->setWorldTransform(xf);
+    d.body->setLinearVelocity(btVector3(0, 0, 0));
+    d.body->setAngularVelocity(btVector3(0, 0, 0));
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1041,9 +1088,14 @@ static void DrawHotbar() {
         }
     }
 
-    const char* hint = "Y:+  X:-  L2/R2:Select  A:Throw";
+    const char* hint;
+    if (riggedValue >= 0)
+        hint = TextFormat("Y:+  X:-  L2/R2:Sel  A:Throw  B:Rig[%d]", riggedValue);
+    else
+        hint = "Y:+  X:-  L2/R2:Sel  A:Throw  B:Rig";
     int hw = MeasureText(hint, 12);
-    DrawText(hint, (SCR_W - hw)/2, y0 - 16, 12, (Color){120, 120, 120, 255});
+    DrawText(hint, (SCR_W - hw)/2, y0 - 16, 12,
+             riggedValue >= 0 ? (Color){200, 100, 100, 255} : (Color){120, 120, 120, 255});
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1108,9 +1160,22 @@ int main(int argc, char **argv) {
 
         // Throw all configured dice
         if (IsKeyPressed(MMF_A)) {
+            // Assign target values if rigged mode is active
             ThrowAll();
+            if (riggedValue >= 0) {
+                for (int i = 0; i < numDice; i++) {
+                    int maxVal = DICE_DEFS[dice[i].typeIdx].numValues;
+                    dice[i].targetValue = (riggedValue <= maxVal) ? riggedValue : maxVal;
+                }
+            }
             allSettled = false;
             totalResult = 0;
+        }
+
+        // B button: cycle rigged value (-1 → 1 → 2 → ... → 20 → -1)
+        if (IsKeyPressed(MMF_B)) {
+            riggedValue++;
+            if (riggedValue > 20) riggedValue = -1;
         }
 
         // Camera orbit
@@ -1142,6 +1207,9 @@ int main(int argc, char **argv) {
                 if (!d.settled) {
                     if (IsDieSettled(d)) {
                         if (++d.settledFrames > 30) {
+                            // Snap to target value if rigged
+                            if (d.targetValue >= 0)
+                                SnapDieToValue(d, d.targetValue);
                             Matrix xf = GetDieTransform(d);
                             d.rolledValue = GetFaceUpValue(d, xf);
                             d.settled = true;
