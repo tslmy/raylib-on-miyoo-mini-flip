@@ -606,6 +606,64 @@ static void DrawTexturedGround(float halfSize, float tileRepeat) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Skybox — equirectangular panorama on a cylinder (CC0 Polyhaven)
+// ═══════════════════════════════════════════════════════════════════
+
+static Texture2D skyboxTex;
+static bool skyboxLoaded = false;
+
+static void InitSkybox() {
+    Image img = LoadImage("skybox.jpg");
+    if (img.data != NULL) {
+        skyboxTex = LoadTextureFromImage(img);
+        UnloadImage(img);
+        skyboxLoaded = true;
+    }
+}
+
+// Draw equirectangular panorama mapped onto a vertical cylinder centered on camera.
+// Depth write is disabled so the sky is always behind everything.
+static void DrawSkybox(Vector3 camPos) {
+    if (!skyboxLoaded) return;
+
+    rlDisableDepthMask();
+    rlSetTexture(skyboxTex.id);
+    rlBegin(RL_TRIANGLES);
+    rlColor4ub(255, 255, 255, 255);
+
+    const int SEGS = 16;
+    const float radius = 50.0f;
+    const float halfH  = 30.0f;
+
+    for (int i = 0; i < SEGS; i++) {
+        float a0 = (float)i / SEGS * 2.0f * PI;
+        float a1 = (float)(i + 1) / SEGS * 2.0f * PI;
+        float u0 = (float)i / SEGS;
+        float u1 = (float)(i + 1) / SEGS;
+
+        float x0 = camPos.x + cosf(a0) * radius;
+        float z0 = camPos.z + sinf(a0) * radius;
+        float x1 = camPos.x + cosf(a1) * radius;
+        float z1 = camPos.z + sinf(a1) * radius;
+        float yTop = camPos.y + halfH;
+        float yBot = camPos.y - halfH;
+
+        // Two triangles per segment (quad)
+        rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
+        rlTexCoord2f(u1, 0); rlVertex3f(x1, yTop, z1);
+        rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
+
+        rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
+        rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
+        rlTexCoord2f(u0, 1); rlVertex3f(x0, yBot, z0);
+    }
+
+    rlEnd();
+    rlSetTexture(0);
+    rlEnableDepthMask();
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Face number texture atlas (3D decals on face surfaces)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -775,6 +833,7 @@ int main(void) {
 
     InitNumberAtlas();
     InitWoodTexture();
+    InitSkybox();
     InitPhysics();
     ThrowAll();
 
@@ -876,6 +935,9 @@ int main(void) {
 
         BeginMode3D(camera);
         rlDisableBackfaceCulling();  // Ground, shadows, and dice all need both faces
+
+        // Skybox: draw equirectangular panorama on cylinder (depth write off)
+        DrawSkybox(camera.position);
 
         // Opaque geometry first: textured wood floor and grid
         DrawTexturedGround(10.0f, 4.0f);  // 4×4 tile repeats
