@@ -561,7 +561,12 @@ static void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
     }
 }
 
-// Draw lit die face triangles (opaque)
+// Draw lit die face triangles with PBR-inspired shading:
+// - Blinn-Phong diffuse + specular (key + fill lights)
+// - Clearcoat specular layer (tight highlight, white)
+// - Schlick Fresnel rim lighting (brighter at glancing angles)
+// - Procedural bump perturbation (subtle surface texture)
+// - Environment tint (sky vs ground reflection)
 static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
@@ -573,11 +578,7 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         const Face& face = d.faces[f];
         Vector3 n = FaceNormal(wv, face);
 
-        float key  = Vector3DotProduct(n, LIGHT_KEY);
-        if (key < 0) key = 0;
-        float fill = Vector3DotProduct(n, LIGHT_FILL);
-        if (fill < 0) fill = 0;
-
+        // Face center for view direction and bump seed
         Vector3 faceCtr = {0, 0, 0};
         for (int j = 0; j < face.count; j++) {
             faceCtr.x += wv[face.idx[j]].x;
@@ -585,27 +586,72 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
             faceCtr.z += wv[face.idx[j]].z;
         }
         faceCtr.x /= face.count; faceCtr.y /= face.count; faceCtr.z /= face.count;
+
+        // Procedural bump: perturb normal with a hash-based micro-texture
+        // Simulates the "packeddirt" normal map from the Three.js version
+        {
+            unsigned int seed = (unsigned int)(faceCtr.x * 1000) * 7919u
+                              + (unsigned int)(faceCtr.z * 1000) * 104729u
+                              + (unsigned int)(f * 31337u);
+            float bx = ((seed & 0xFF) / 255.0f - 0.5f) * 0.08f;
+            float bz = (((seed >> 8) & 0xFF) / 255.0f - 0.5f) * 0.08f;
+            n.x += bx; n.z += bz;
+            float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
+            if (len > 0.001f) { n.x /= len; n.y /= len; n.z /= len; }
+        }
+
         Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, faceCtr));
+
+        // ── Diffuse (two lights) ──
+        float keyDot  = Vector3DotProduct(n, LIGHT_KEY);
+        if (keyDot < 0) keyDot = 0;
+        float fillDot = Vector3DotProduct(n, LIGHT_FILL);
+        if (fillDot < 0) fillDot = 0;
+        float diffuse = 0.50f + 0.35f * keyDot + 0.15f * fillDot;
+
+        // ── Blinn-Phong specular (base material, roughness ~0.25) ──
         Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
-        float spec = Vector3DotProduct(n, halfVec);
-        if (spec < 0) spec = 0;
-        spec = spec * spec * spec * spec;
+        float specDot = Vector3DotProduct(n, halfVec);
+        if (specDot < 0) specDot = 0;
+        // pow(specDot, 16) ≈ roughness 0.25
+        float spec = specDot;
+        for (int p = 0; p < 4; p++) spec *= spec;  // spec^16
 
-        float diffuse = 0.50f + 0.35f * key + 0.15f * fill;
+        // ── Clearcoat specular (tighter highlight, white, 50% strength) ──
+        // Simulates clearcoat=0.5 from the Three.js MeshPhysicalMaterial
+        float ccSpec = specDot;
+        for (int p = 0; p < 5; p++) ccSpec *= ccSpec;  // ccSpec^32
+        float clearcoat = 0.5f * ccSpec;
+
+        // Fill light specular (weaker)
+        Vector3 halfFill = Vector3Normalize(Vector3Add(LIGHT_FILL, viewDir));
+        float fillSpec = Vector3DotProduct(n, halfFill);
+        if (fillSpec < 0) fillSpec = 0;
+        fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;  // ^4
+
+        // ── Fresnel rim (Schlick approximation) ──
+        float NdotV = Vector3DotProduct(n, viewDir);
+        if (NdotV < 0) NdotV = 0;
+        float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
+        // Clamp fresnel contribution for subtle rim
+        float rim = fresnel * 0.35f;
+
+        // ── Compose final color ──
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
+        float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
 
-        float sr = base.r * diffuse * dimFactor + 255.0f * spec * 0.6f;
-        float sg = base.g * diffuse * dimFactor + 255.0f * spec * 0.6f;
-        float sb = base.b * diffuse * dimFactor + 255.0f * spec * 0.6f;
+        float sr = base.r * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+        float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+        float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
         // Fake environment tint: sky (top) vs ground (bottom) based on normal.y
-        float envUp = n.y * 0.5f + 0.5f;  // remap -1..1 → 0..1
-        float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);  // sky ↔ warm ground
+        float envUp = n.y * 0.5f + 0.5f;
+        float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);
         float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
         float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
-        sr = sr * 0.85f + envR * 0.15f;
-        sg = sg * 0.85f + envG * 0.15f;
-        sb = sb * 0.85f + envB * 0.15f;
+        sr = sr * 0.88f + envR * 0.12f;
+        sg = sg * 0.88f + envG * 0.12f;
+        sb = sb * 0.88f + envB * 0.12f;
 
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
