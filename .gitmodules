@@ -6,3 +6,6 @@
 	path = third_party/tinygl
 	url = https://github.com/tslmy/tinygl.git
 	branch = mmf
+[submodule "third_party/bullet3"]
+	path = third_party/bullet3
+	url = https://github.com/bulletphysics/bullet3.git
