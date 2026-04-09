@@ -1,6 +1,8 @@
 # Porting Raylib to Miyoo Mini Flip
 
-A tiny [Raylib][rl] 3D demo for [Miyoo Mini Flip (MMF)][mm] running OnionOS — a cube free-falls with [Bullet3][bt] rigid body physics, bouncing off a floor plane.
+A **dice roller** for [Miyoo Mini Flip (MMF)][mm] running OnionOS — powered by [Raylib][rl], [TinyGL][tgl] software rendering, and [Bullet3][bt] rigid-body physics.
+
+Supports all standard polyhedral dice: **d4**, **d6**, **d8**, **d10**, **d12**, **d20**. Each die falls with realistic physics (gravity, bouncing, friction) and the rolled value is detected automatically once the die settles.
 
 <img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
 
@@ -82,7 +84,7 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 ## Repo layout
 
-- `src/main.cpp`: Demo program (physics cube with Bullet3 + orbit camera control)
+- `src/main.cpp`: Dice roller app (all 6 polyhedral dice, Bullet3 physics, face-up detection)
 - `src/tinygl_stubs.c`: GL functions missing from TinyGL that Raylib requires
 - `src/evdev_probe.c`: Diagnostic tool to verify MMF button→evdev keycodes on device
 - `docker/`: Cross-compile toolchain
@@ -97,6 +99,6 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 - This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
 - Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
-- **Controls**: D-Pad orbits the camera, L1/R1 zooms in/out, A re-throws the cube. Menu or Power quits.
+- **Controls**: A throws the die, B cycles dice type (d4→d6→d8→d10→d12→d20), D-Pad orbits the camera, L1/R1 zooms. Menu or Power quits.
 
 [bt]: https://github.com/bulletphysics/bullet3
