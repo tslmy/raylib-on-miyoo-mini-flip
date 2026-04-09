@@ -36,6 +36,8 @@ just deploy <mmf-host>
 
 The app will install to `/mnt/SDCARD/App/raylib-cube` and show up in the OnionOS Apps list.
 
+Alternatively, you can test locally from your computer by executing `just try`, which will take a screenshot after running the program for a given number of frames in an emulated ARM Docker. The screenshot will be saved to `dist/screenshot.png` and opened with your default image viewer.
+
 ## How It Works
 
 The MMF's SSD202D SoC (dual-core ARM Cortex-A7) has **no 3D GPU**, so we need a software renderer.
