@@ -86,9 +86,14 @@ $CC -o "$OUT_DIR/raylib-cube" \
   -Wl,--start-group -lraylib -lTinyGL "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
   -lm -lpthread -ldl -lc -lgcc_s -lgcc
 
+# Build evdev probe tool (standalone, no raylib dependency).
+$CC -O2 -fno-stack-protector $MMF_ARCH_FLAGS --sysroot=$SYSROOT $SYSROOT_LDFLAGS $RPATH_LINKS \
+  -o "$OUT_DIR/evdev-probe" "$SRC_DIR/src/evdev_probe.c" -lc
+
 # Strip reduces binary size (optional).
 if [ -n "${STRIP:-}" ]; then
   $STRIP "$OUT_DIR/raylib-cube" || true
+  $STRIP "$OUT_DIR/evdev-probe" || true
 fi
 
 # Bundle OnionOS launcher metadata.

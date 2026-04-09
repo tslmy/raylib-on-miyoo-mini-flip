@@ -5,8 +5,21 @@
 #include "rlgl.h"
 #include "raymath.h"
 
+// MMF button → raylib key mapping (after evdev translation in rcore_memory.c):
+//   D-Pad: KEY_UP(265) KEY_DOWN(264) KEY_LEFT(263) KEY_RIGHT(262)
+//   A=KEY_SPACE(32) B=KEY_LEFT_CONTROL(341) X=KEY_LEFT_SHIFT(340) Y=KEY_LEFT_ALT(342)
+//   L1=KEY_E(69) L2=KEY_TAB(258) R1=KEY_T(84) R2=KEY_BACKSPACE(259)
+//   Start=KEY_ENTER(257) Select=KEY_RIGHT_CONTROL(345) Menu=KEY_ESCAPE(256)
+#define MMF_DPAD_UP     265
+#define MMF_DPAD_DOWN   264
+#define MMF_DPAD_LEFT   263
+#define MMF_DPAD_RIGHT  262
+#define MMF_A           32   // KEY_SPACE
+#define MMF_B           341  // KEY_LEFT_CONTROL
+#define MMF_L1          69   // KEY_E
+#define MMF_R1          84   // KEY_T
+
 int main(void) {
-    // MMF native panel is 750x560; keep fullscreen.
     const int screenWidth = 750;
     const int screenHeight = 560;
 
@@ -14,9 +27,19 @@ int main(void) {
     InitWindow(screenWidth, screenHeight, "Raylib Cube - MMF");
     SetTargetFPS(30);
 
+    // Orbit camera state
+    float camDist = 5.0f;
+    float camYaw = 45.0f;   // degrees, horizontal angle
+    float camPitch = 30.0f;  // degrees, vertical angle
+
+    const float CAM_ORBIT_SPEED = 90.0f;  // degrees/sec
+    const float CAM_ZOOM_SPEED = 3.0f;    // units/sec
+    const float CAM_DIST_MIN = 2.0f;
+    const float CAM_DIST_MAX = 15.0f;
+    const float CAM_PITCH_MIN = -85.0f;
+    const float CAM_PITCH_MAX = 85.0f;
+
     Camera3D camera = { 0 };
-    camera.position = (Vector3){ 3.0f, 3.0f, 3.0f };
-    camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
     camera.up = (Vector3){ 0.0f, 1.0f, 0.0f };
     camera.fovy = 45.0f;
     camera.projection = CAMERA_PERSPECTIVE;
@@ -65,13 +88,37 @@ int main(void) {
         {3, 7},
     };
     const Vector3 lightDir = Vector3Normalize((Vector3){0.3f, 0.6f, -0.7f});
-    double fpsTimer = GetTime();
-    int fpsFrames = 0;
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
         rotation += 60.0f * dt;
         if (rotation > 360.0f) rotation -= 360.0f;
+
+        // Camera control: D-Pad orbits, L1/R1 zoom, A resets
+        if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= CAM_ORBIT_SPEED * dt;
+        if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += CAM_ORBIT_SPEED * dt;
+        if (IsKeyDown(MMF_DPAD_UP))    camPitch += CAM_ORBIT_SPEED * dt;
+        if (IsKeyDown(MMF_DPAD_DOWN))  camPitch -= CAM_ORBIT_SPEED * dt;
+        if (IsKeyDown(MMF_L1))         camDist  -= CAM_ZOOM_SPEED * dt;
+        if (IsKeyDown(MMF_R1))         camDist  += CAM_ZOOM_SPEED * dt;
+
+        if (IsKeyPressed(MMF_A)) { camDist = 5.0f; camYaw = 45.0f; camPitch = 30.0f; }
+
+        // Clamp
+        if (camPitch > CAM_PITCH_MAX) camPitch = CAM_PITCH_MAX;
+        if (camPitch < CAM_PITCH_MIN) camPitch = CAM_PITCH_MIN;
+        if (camDist < CAM_DIST_MIN) camDist = CAM_DIST_MIN;
+        if (camDist > CAM_DIST_MAX) camDist = CAM_DIST_MAX;
+
+        // Spherical → Cartesian
+        float yawRad = camYaw * DEG2RAD;
+        float pitchRad = camPitch * DEG2RAD;
+        camera.position = (Vector3){
+            camDist * cosf(pitchRad) * sinf(yawRad),
+            camDist * sinf(pitchRad),
+            camDist * cosf(pitchRad) * cosf(yawRad),
+        };
+        camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
 
         BeginDrawing();
         ClearBackground((Color){ 20, 24, 30, 255 });
@@ -115,6 +162,7 @@ int main(void) {
         EndMode3D();
 
         DrawText("Raylib on MMF", 20, 20, 20, (Color){ 230, 230, 230, 255 });
+        DrawText("[D-Pad] Orbit  [L1/R1] Zoom  [A] Reset", 20, screenHeight - 30, 14, (Color){ 160, 160, 160, 255 });
         if (getenv("RAYLIB_MMF_SHOWFPS") != NULL)
             DrawFPS(20, 50);
         EndDrawing();
