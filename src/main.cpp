@@ -272,7 +272,7 @@ static ActiveDie dice[MAX_ACTIVE_DICE];
 static int numDice = 0;
 
 // 80% transparent dice (alpha = 20% of 255 ≈ 51)
-static const unsigned char DIE_ALPHA = 51;
+static const unsigned char DIE_ALPHA = 128;
 
 // Triangle buffer for back-to-front sorting (painter's algorithm)
 struct SortTri {
@@ -538,13 +538,13 @@ static void FlushSortedTris(Vector3 camPos) {
     // NOTE: BeginBlendMode/EndBlendMode are no-ops in GL1.1 mode
     // (rlSetBlendMode is guarded by GRAPHICS_API_OPENGL_33/ES2),
     // so we call the GL functions directly.
+    // Blend stays enabled through the 2D UI pass so font texture alpha works.
     rlEnableColorBlend();
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     rlDisableDepthMask();
     for (int i = 0; i < triCount; i++)
         DrawTriangle3D(triBuffer[i].v[0], triBuffer[i].v[1], triBuffer[i].v[2], triBuffer[i].col);
     rlEnableDepthMask();
-    rlDisableColorBlend();
 
     triCount = 0;
 }
@@ -829,13 +829,11 @@ int main(void) {
         FlushSortedTris(camera.position);
 
         // Draw face number decals on the die surfaces (3D, with blending)
-        rlEnableColorBlend();
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // Blend is already enabled from FlushSortedTris
         for (int i = 0; i < numDice; i++) {
             Matrix xf = GetDieTransform(dice[i]);
             DrawDieNumberDecals(dice[i], xf, camera.position);
         }
-        rlDisableColorBlend();
         rlEnableBackfaceCulling();
 
         EndMode3D();
@@ -859,6 +857,9 @@ int main(void) {
 
         if (getenv("RAYLIB_MMF_SHOWFPS"))
             DrawFPS(20, 50);
+
+        // Disable blend after all UI drawing is done (font textures need it)
+        rlDisableColorBlend();
 
         EndDrawing();
     }
