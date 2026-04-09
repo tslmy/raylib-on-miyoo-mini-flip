@@ -678,6 +678,55 @@ static void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     }
 }
 
+// Draw specular bloom glow for a die — enlarged faint quads on bright faces.
+// Simulates UnrealBloomPass (threshold=0.9, strength=0.2) from the JS version
+// without any framebuffer readback (pure geometry approach).
+static void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+        Vector3 n = FaceNormal(wv, face);
+
+        Vector3 faceCtr = {0, 0, 0};
+        for (int j = 0; j < face.count; j++) {
+            faceCtr.x += wv[face.idx[j]].x;
+            faceCtr.y += wv[face.idx[j]].y;
+            faceCtr.z += wv[face.idx[j]].z;
+        }
+        faceCtr.x /= face.count; faceCtr.y /= face.count; faceCtr.z /= face.count;
+
+        Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, faceCtr));
+        Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
+        float specDot = Vector3DotProduct(n, halfVec);
+        if (specDot < 0) specDot = 0;
+        // Same pow-16 as base specular
+        float spec = specDot;
+        for (int p = 0; p < 4; p++) spec *= spec;
+
+        // Only bloom faces with strong specular (threshold ~0.9 mapped to spec > 0.15)
+        if (spec < 0.15f) continue;
+
+        float bloom = (spec - 0.15f) / 0.85f;  // 0..1 intensity
+        unsigned char ba = (unsigned char)(bloom * 40.0f);  // subtle glow alpha
+
+        // Expand face outward from center by 30% for glow halo
+        Vector3 glow[MAX_FACE_VERTS];
+        for (int j = 0; j < face.count; j++) {
+            Vector3 dir = Vector3Subtract(wv[face.idx[j]], faceCtr);
+            glow[j] = Vector3Add(faceCtr, Vector3Scale(dir, 1.3f));
+            // Push slightly toward camera to avoid z-fighting
+            glow[j] = Vector3Add(glow[j], Vector3Scale(n, 0.01f));
+        }
+
+        Color gc = {255, 250, 240, ba};  // warm white glow
+        for (int j = 1; j < face.count - 1; j++)
+            DrawTriangle3D(glow[0], glow[j], glow[j+1], gc);
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Procedural hardwood floor texture
 // ═══════════════════════════════════════════════════════════════════
@@ -1160,6 +1209,14 @@ int main(int argc, char **argv) {
             DrawDieFacesLit(dice[di], xf, camera.position);
             DrawDieNumberDecals(dice[di], xf, camera.position);
         }
+
+        // Bloom glow pass: draw enlarged faint quads on bright specular faces
+        for (int i = 0; i < numDice; i++) {
+            int di = diceOrder[i];
+            Matrix xf = GetDieTransform(dice[di]);
+            DrawDieBloom(dice[di], xf, camera.position);
+        }
+
         rlEnableDepthMask();
         glShadeModel(GL_SMOOTH);  // Restore default shade model
         rlEnableBackfaceCulling();
