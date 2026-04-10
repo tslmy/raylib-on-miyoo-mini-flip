@@ -134,8 +134,9 @@ void CleanupPhysics() {
 }
 
 void StepPhysics(float dt) {
-    if (dt > 0 && dt < 0.1f)
-        world->stepSimulation(dt, 4, 1.0f/120.0f);
+    if (dt <= 0) return;
+    if (dt > 0.5f) dt = 0.5f;  // clamp to avoid spiral of death
+    world->stepSimulation(dt, 10, 1.0f/60.0f);
 }
 
 // ═══════════════════════════════════════════════════════════════════
