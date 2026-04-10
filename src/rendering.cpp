@@ -1246,64 +1246,117 @@ void DrawTexturedGround(float halfSize, float tileRepeat) {
 //
 //   We use a CYLINDER (not a cube) because our skybox image is a
 //   360° equirectangular panorama — it maps naturally onto a cylinder.
-//   16 vertical segments approximate the circle.  The cylinder follows
+//   64 vertical segments approximate the circle.  The cylinder follows
 //   the camera position so you can never "walk to the edge."
+//
+//   TILING: TinyGL forces all textures to 256×256.  A single 256-wide
+//   texture for 360° gives only ~0.7 px/degree — very coarse.  Instead,
+//   we slice the panorama into SKYBOX_TILES horizontal strips at load
+//   time.  Each strip becomes its own 256×256 texture covering only
+//   360°/TILES degrees, giving TILES× higher effective resolution.
 //
 //   Depth writing is disabled so the skybox is always behind everything.
 // ═══════════════════════════════════════════════════════════════════
 
-static Texture2D skyboxTex;
+#define SKYBOX_TILES 8   // 8 tiles × 256px = ~2048 effective horizontal texels
+
+static Texture2D skyboxTiles[SKYBOX_TILES];
+static int skyboxTileCount = 0;
 static bool skyboxLoaded = false;
 
-// Load the skybox panorama image and upload to GPU texture.
+// Load the skybox panorama and split into horizontal tiles.
+// Each tile covers 360°/SKYBOX_TILES of the panorama.
 void InitSkybox() {
     Image img = LoadImage("skybox.png");
-    if (img.data != NULL) {
-        skyboxTex = LoadTextureFromImage(img);
-        UnloadImage(img);
-        skyboxLoaded = true;
+    if (img.data == NULL) return;
+
+    // Ensure uniform pixel format for slicing
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    int w = img.width, h = img.height;
+    int tileW = w / SKYBOX_TILES;
+
+    for (int t = 0; t < SKYBOX_TILES; t++) {
+        // Extract a vertical strip from the panorama
+        Image tile = GenImageColor(tileW, h, BLANK);
+        ImageFormat(&tile, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+
+        unsigned char* srcPx = (unsigned char*)img.data;
+        unsigned char* dstPx = (unsigned char*)tile.data;
+        int srcX = t * tileW;
+
+        for (int y = 0; y < h; y++) {
+            memcpy(dstPx + y * tileW * 4,
+                   srcPx + (y * w + srcX) * 4,
+                   tileW * 4);
+        }
+
+        // TinyGL will resize this tile to 256×256, but now each tile
+        // covers only 1/SKYBOX_TILES of the panorama — much sharper.
+        skyboxTiles[t] = LoadTextureFromImage(tile);
+        UnloadImage(tile);
     }
+    skyboxTileCount = SKYBOX_TILES;
+    skyboxLoaded = true;
+    UnloadImage(img);
+    TraceLog(LOG_INFO, "SKYBOX: Loaded %dx%d panorama as %d tiles (%d px/tile → 256×256)",
+             w, h, SKYBOX_TILES, tileW);
 }
 
 // Draw the skybox cylinder centered on the camera.
-// Each of the 64 segments is a vertical quad (2 triangles).
-// U texture coordinate maps 0→1 around the 360° panorama.
+// Each tile texture covers 1/SKYBOX_TILES of the 360° panorama.
+// Within each tile, segments subdivide the arc for smooth curvature.
+// UV coordinates map 0→1 across each tile's angular range.
 void DrawSkybox(Vector3 camPos) {
     if (!skyboxLoaded) return;
 
     rlDisableDepthMask();
-    rlSetTexture(skyboxTex.id);
-    rlBegin(RL_TRIANGLES);
-    rlColor4ub(255, 255, 255, 255);
 
-    const int SEGS = 64;
+    const int SEGS_PER_TILE = 8;  // 8 segments × 8 tiles = 64 total
     const float radius = 50.0f;
     const float halfH  = 30.0f;
 
-    for (int i = 0; i < SEGS; i++) {
-        float a0 = (float)i / SEGS * 2.0f * PI;
-        float a1 = (float)(i + 1) / SEGS * 2.0f * PI;
-        float u0 = (float)i / SEGS;
-        float u1 = (float)(i + 1) / SEGS;
+    for (int t = 0; t < skyboxTileCount; t++) {
+        rlSetTexture(skyboxTiles[t].id);
+        rlBegin(RL_TRIANGLES);
+        rlColor4ub(255, 255, 255, 255);
 
-        float x0 = camPos.x + cosf(a0) * radius;
-        float z0 = camPos.z + sinf(a0) * radius;
-        float x1 = camPos.x + cosf(a1) * radius;
-        float z1 = camPos.z + sinf(a1) * radius;
-        float yTop = camPos.y + halfH;
-        float yBot = camPos.y - halfH;
+        // Angular range for this tile
+        float tileStart = (float)t / skyboxTileCount;
+        float tileEnd   = (float)(t + 1) / skyboxTileCount;
 
-        rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
-        rlTexCoord2f(u1, 0); rlVertex3f(x1, yTop, z1);
-        rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
+        for (int i = 0; i < SEGS_PER_TILE; i++) {
+            // Fraction within this tile [0, 1]
+            float frac0 = (float)i / SEGS_PER_TILE;
+            float frac1 = (float)(i + 1) / SEGS_PER_TILE;
 
-        rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
-        rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
-        rlTexCoord2f(u0, 1); rlVertex3f(x0, yBot, z0);
+            // Global angle
+            float a0 = (tileStart + frac0 * (tileEnd - tileStart)) * 2.0f * PI;
+            float a1 = (tileStart + frac1 * (tileEnd - tileStart)) * 2.0f * PI;
+
+            // UV within this tile's texture [0, 1]
+            float u0 = frac0;
+            float u1 = frac1;
+
+            float x0 = camPos.x + cosf(a0) * radius;
+            float z0 = camPos.z + sinf(a0) * radius;
+            float x1 = camPos.x + cosf(a1) * radius;
+            float z1 = camPos.z + sinf(a1) * radius;
+            float yTop = camPos.y + halfH;
+            float yBot = camPos.y - halfH;
+
+            rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
+            rlTexCoord2f(u1, 0); rlVertex3f(x1, yTop, z1);
+            rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
+
+            rlTexCoord2f(u0, 0); rlVertex3f(x0, yTop, z0);
+            rlTexCoord2f(u1, 1); rlVertex3f(x1, yBot, z1);
+            rlTexCoord2f(u0, 1); rlVertex3f(x0, yBot, z0);
+        }
+
+        rlEnd();
+        rlSetTexture(0);
     }
 
-    rlEnd();
-    rlSetTexture(0);
     rlEnableDepthMask();
 }
 
@@ -1931,7 +1984,10 @@ void DrawHelpOverlay() {
 // Called during shutdown to prevent resource leaks.
 void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
-    if (skyboxLoaded) UnloadTexture(skyboxTex);
+    if (skyboxLoaded) {
+        for (int i = 0; i < skyboxTileCount; i++)
+            UnloadTexture(skyboxTiles[i]);
+    }
     if (scratchLoaded) UnloadTexture(scratchTex);
     if (dirtLoaded) UnloadTexture(dirtTex);
     UnloadTexture(bakedFloorTex);
