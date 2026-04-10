@@ -1010,7 +1010,10 @@ static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort 
     return (r << 16) | (g << 8) | b;
 }
 
+bool enablePostProcess = false;  // off by default — bloom is blocky on MMF
+
 void ApplyBloomPostProcess() {
+    if (!enablePostProcess) return;
     glPostProcess(BloomPostProcessCallback);
 }
 

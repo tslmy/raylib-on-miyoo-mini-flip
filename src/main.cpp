@@ -177,11 +177,13 @@ int main(int argc, char **argv) {
             DrawDieEdges(dice[di], xf, camera.position);
         }
 
-        // Bloom glow pass
-        for (int i = 0; i < numDice; i++) {
-            int di = diceOrder[i];
-            Matrix xf = GetDieTransform(dice[di]);
-            DrawDieBloom(dice[di], xf, camera.position);
+        // Bloom glow pass (geometry-based specular halos)
+        if (enablePostProcess) {
+            for (int i = 0; i < numDice; i++) {
+                int di = diceOrder[i];
+                Matrix xf = GetDieTransform(dice[di]);
+                DrawDieBloom(dice[di], xf, camera.position);
+            }
         }
 
         rlEnableDepthMask();
