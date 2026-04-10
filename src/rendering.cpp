@@ -1878,14 +1878,53 @@ void DrawHotbar() {
         }
     }
 
-    const char* hint;
-    if (riggedValue >= 0)
-        hint = TextFormat("Y:+  X:-  L2/R2:Sel  A:Throw  B:Rig[%d]", riggedValue);
-    else
-        hint = "Y:+  X:-  L2/R2:Sel  A:Throw  B:Rig";
+    const char* hint = "D-pad:Sel  A:Throw  SELECT/START:Help";
     int hw = MeasureText(hint, 12);
-    DrawText(hint, (SCR_W - hw)/2, y0 - 16, 12,
-             riggedValue >= 0 ? (Color){200, 100, 100, 255} : (Color){120, 120, 120, 255});
+    DrawText(hint, (SCR_W - hw)/2, y0 - 16, 12, (Color){120, 120, 120, 255});
+}
+
+// Draw a semi-transparent overlay showing all button mappings.
+// Toggled by tapping SELECT or START (when not used as modifier).
+void DrawHelpOverlay() {
+    // Dark semi-transparent backdrop
+    DrawRectangle(0, 0, SCR_W, SCR_H, (Color){0, 0, 0, 180});
+
+    int y = 60;
+    const int lx = 100;   // left column
+    const int rx = 420;   // right column
+    const int sz = 16;
+    const int gap = 24;
+    Color title = {255, 220, 50, 255};
+    Color body  = {220, 220, 220, 255};
+    Color dim   = {150, 150, 150, 255};
+
+    DrawTextBold("Controls", (SCR_W - MeasureText("Controls", 28)) / 2, y, 28, title);
+    y += 44;
+
+    DrawTextBold("--- Default ---", lx, y, sz, title);
+    y += gap;
+    DrawText("D-pad L/R    Cycle dice type",    lx, y, sz, body); y += gap;
+    DrawText("D-pad Up     Add die",            lx, y, sz, body); y += gap;
+    DrawText("D-pad Down   Remove die",         lx, y, sz, body); y += gap;
+    DrawText("A            Throw dice",         lx, y, sz, body); y += gap;
+    DrawText("L / R        Rotate camera",      lx, y, sz, body); y += gap;
+    DrawText("L2 / R2      Zoom in/out",        lx, y, sz, body); y += gap;
+    DrawText("X / Y        Tilt camera",        lx, y, sz, body); y += gap;
+
+    y = 60 + 44;
+    DrawTextBold("--- SELECT + ---", rx, y, sz, title);
+    y += gap;
+    DrawText("D-pad L/R    Pan left/right",     rx, y, sz, body); y += gap;
+    DrawText("D-pad U/D    Pan up/down",        rx, y, sz, body); y += gap;
+    DrawText("X / Y        Pan fwd/back",       rx, y, sz, body); y += gap;
+    y += gap;
+    DrawTextBold("--- START + ---", rx, y, sz, title);
+    y += gap;
+    DrawText("D-pad        Orbit camera",       rx, y, sz, body); y += gap;
+    DrawText("X / Y        Tilt camera",        rx, y, sz, body); y += gap;
+
+    DrawText("Press SELECT or START to close", (SCR_W - MeasureText("Press SELECT or START to close", 14)) / 2,
+             SCR_H - 50, 14, dim);
 }
 
 // Free all GPU textures and CPU allocations.

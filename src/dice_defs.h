@@ -44,6 +44,8 @@
 #define MMF_L2          258  // KEY_TAB
 #define MMF_R1          84   // KEY_T
 #define MMF_R2          259  // KEY_BACKSPACE
+#define MMF_SELECT      344  // KEY_RIGHT_SHIFT
+#define MMF_START       257  // KEY_ENTER
 
 // ═══════════════════════════════════════════════════════════════════
 // Screen size and global constants
