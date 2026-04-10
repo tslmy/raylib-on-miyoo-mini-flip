@@ -28,6 +28,7 @@ void DrawHotbar();
 void DrawTextBold(const char* text, int x, int y, int sz, Color col);
 
 // Post-processing
+extern bool enablePostProcess;  // toggle for bloom + depth fog (default: off)
 void ApplyBloomPostProcess();
 
 // Cleanup
