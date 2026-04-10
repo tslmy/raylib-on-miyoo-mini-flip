@@ -120,8 +120,9 @@ test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.pn
 # Bundle skybox image for 3D environment.
 test -f "$ASSETS_DIR/skybox.png" && cp -f "$ASSETS_DIR/skybox.png" "$OUT_DIR/skybox.png"
 
-# Bundle hardwood floor texture.
+# Bundle hardwood floor textures.
 test -f "$ASSETS_DIR/hardwood2_diffuse.png" && cp -f "$ASSETS_DIR/hardwood2_diffuse.png" "$OUT_DIR/hardwood2_diffuse.png"
+test -f "$ASSETS_DIR/hardwood2_bump.png" && cp -f "$ASSETS_DIR/hardwood2_bump.png" "$OUT_DIR/hardwood2_bump.png"
 
 # Bundle MI GFX libs when available (for hardware blit on MMF).
 if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
