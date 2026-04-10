@@ -20,6 +20,7 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform);
 void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos);
 void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos);
 void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos);
+void DrawFloorReflections(Vector3 camPos);
 
 // 2D UI
 void DrawHotbar();

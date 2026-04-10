@@ -142,6 +142,7 @@ int main(int argc, char **argv) {
 
         DrawSkybox(camera.position);
         DrawTexturedGround(10.0f, 4.0f);
+        DrawFloorReflections(camera.position);
 
         // Enable blend for transparent geometry.
         // TinyGL's GL_SMOOTH blend path hardcodes alpha=255; GL_FLAT works correctly.
