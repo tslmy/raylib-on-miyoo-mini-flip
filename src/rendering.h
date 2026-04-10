@@ -35,6 +35,7 @@ void InitWoodTexture();   // Load materials, compute SH/probes, bake floor textu
 void InitSkybox();        // Load skybox panorama image
 void InitNumberAtlas();   // Generate number texture atlas (0–20)
 void InitScratchTexture();// Convert scratch normal map to highlight overlay
+void InitDirtTexture();  // Convert dirt normal map to bump overlay
 
 // ── 3D drawing (call each frame in the order listed above) ──
 void DrawSkybox(Vector3 camPos);                                    // Cylindrical panorama background
@@ -43,6 +44,8 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform);        // Ground sha
 void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos);  // Gouraud-lit die faces
 void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,      // Per-pixel scratch highlights
                            Vector3 camPos);
+void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,        // Per-pixel bump highlights/shadows
+                        Vector3 camPos);
 void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos);     // Subtle wireframe edges
 void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos);     // Geometry bloom halos
 void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos); // Face numbers
