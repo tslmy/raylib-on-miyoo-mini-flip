@@ -190,6 +190,9 @@ int main(int argc, char **argv) {
 
         EndMode3D();
 
+        // Screen-space bloom on the 3D scene (before UI overlay)
+        ApplyBloomPostProcess();
+
         // ── Result display ──
         if (allSettled && numDice > 0) {
             char resultBuf[128];

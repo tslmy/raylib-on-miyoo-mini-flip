@@ -26,5 +26,8 @@ void DrawFloorReflections(Vector3 camPos);
 void DrawHotbar();
 void DrawTextBold(const char* text, int x, int y, int sz, Color col);
 
+// Post-processing
+void ApplyBloomPostProcess();
+
 // Cleanup
 void UnloadRenderingTextures();
