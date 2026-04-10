@@ -325,26 +325,32 @@ int main(int argc, char **argv) {
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glShadeModel(GL_FLAT);  // shadows/decals use flat; DrawDieFacesLit switches to smooth
 
+        // Cache per-die transforms (used for shadows, sorting, and rendering)
+        Matrix xforms[MAX_ACTIVE_DICE];
+        for (int i = 0; i < numDice; i++)
+            xforms[i] = GetDieTransform(dice[i]);
+
         // ── SHADOWS ──
         // Projected outline shadows on the floor for each die.
-        for (int i = 0; i < numDice; i++) {
-            Matrix xf = GetDieTransform(dice[i]);
-            DrawProjectedShadow(dice[i], xf);
-        }
+        for (int i = 0; i < numDice; i++)
+            DrawProjectedShadow(dice[i], xforms[i]);
 
         // ── BACK-TO-FRONT SORT for transparency ──
         // The "painter's algorithm": draw far objects first so near objects
         // blend on top correctly.  Without this, you'd see background through
         // a die that was drawn before a closer die.
         int diceOrder[MAX_ACTIVE_DICE];
-        for (int i = 0; i < numDice; i++) diceOrder[i] = i;
+        float diceDist[MAX_ACTIVE_DICE];  // cached squared distances
+        for (int i = 0; i < numDice; i++) {
+            diceOrder[i] = i;
+            diceDist[i] = Vector3LengthSqr(Vector3Subtract(
+                {xforms[i].m12, xforms[i].m13, xforms[i].m14}, camera.position));
+        }
         for (int i = 0; i < numDice - 1; i++)
             for (int j = i + 1; j < numDice; j++) {
-                Matrix a = GetDieTransform(dice[diceOrder[i]]);
-                Matrix b = GetDieTransform(dice[diceOrder[j]]);
-                float da = Vector3LengthSqr(Vector3Subtract({a.m12,a.m13,a.m14}, camera.position));
-                float db = Vector3LengthSqr(Vector3Subtract({b.m12,b.m13,b.m14}, camera.position));
-                if (da < db) { int tmp = diceOrder[i]; diceOrder[i] = diceOrder[j]; diceOrder[j] = tmp; }
+                if (diceDist[diceOrder[i]] < diceDist[diceOrder[j]]) {
+                    int tmp = diceOrder[i]; diceOrder[i] = diceOrder[j]; diceOrder[j] = tmp;
+                }
             }
 
         // ── DICE RENDERING ──
@@ -354,12 +360,11 @@ int main(int argc, char **argv) {
         rlDisableDepthMask();
         for (int i = 0; i < numDice; i++) {
             int di = diceOrder[i];
-            Matrix xf = GetDieTransform(dice[di]);
-            DrawDieFacesLit(dice[di], xf, camera.position);
-            DrawDieDirtOverlay(dice[di], xf, camera.position);
-            DrawDieScratchOverlay(dice[di], xf, camera.position);
-            DrawDieNumberDecals(dice[di], xf, camera.position);
-            DrawDieEdges(dice[di], xf, camera.position);
+            DrawDieFacesLit(dice[di], xforms[di], camera.position);
+            DrawDieDirtOverlay(dice[di], xforms[di], camera.position);
+            DrawDieScratchOverlay(dice[di], xforms[di], camera.position);
+            DrawDieNumberDecals(dice[di], xforms[di], camera.position);
+            DrawDieEdges(dice[di], xforms[di], camera.position);
         }
 
         // ── GEOMETRY BLOOM ──
@@ -368,8 +373,7 @@ int main(int argc, char **argv) {
         if (enablePostProcess) {
             for (int i = 0; i < numDice; i++) {
                 int di = diceOrder[i];
-                Matrix xf = GetDieTransform(dice[di]);
-                DrawDieBloom(dice[di], xf, camera.position);
+                DrawDieBloom(dice[di], xforms[di], camera.position);
             }
         }
 
