@@ -123,6 +123,7 @@ test -f "$ASSETS_DIR/skybox.png" && cp -f "$ASSETS_DIR/skybox.png" "$OUT_DIR/sky
 # Bundle hardwood floor textures.
 test -f "$ASSETS_DIR/hardwood2_diffuse.png" && cp -f "$ASSETS_DIR/hardwood2_diffuse.png" "$OUT_DIR/hardwood2_diffuse.png"
 test -f "$ASSETS_DIR/hardwood2_bump.png" && cp -f "$ASSETS_DIR/hardwood2_bump.png" "$OUT_DIR/hardwood2_bump.png"
+test -f "$ASSETS_DIR/hardwood2_roughness.png" && cp -f "$ASSETS_DIR/hardwood2_roughness.png" "$OUT_DIR/hardwood2_roughness.png"
 
 # Bundle MI GFX libs when available (for hardware blit on MMF).
 if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
