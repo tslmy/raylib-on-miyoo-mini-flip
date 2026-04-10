@@ -18,9 +18,9 @@
 //
 // CAMERA:
 //   Orbit camera around a pannable target point (default: table center).
-//   L1/R1 = rotate, L2/R2 = zoom, X/Y = tilt.
-//   SELECT + D-pad = pan, SELECT + X/Y = dolly.
-//   START + D-pad/X/Y = orbit alternative.
+//   L1/R1 = rotate, L2/R2 = zoom, Y/X = tilt.
+//   SELECT + D-pad = pan, SELECT + Y/X = dolly.
+//   START + D-pad/Y/X = freelook (turn head from current position).
 //   Position computed from spherical coords (yaw, pitch, distance) + target.
 //
 // TRANSPARENCY:
@@ -71,12 +71,15 @@ int main(int argc, char **argv) {
     InitPhysics();       // Set up Bullet3 world + ground plane
     ThrowAll();          // Spawn initial dice
 
-    // ── CAMERA (orbit + pan) ──
+    // ── CAMERA (orbit + pan + freelook) ──
     // Spherical coordinates around a movable target point.
     // Yaw = horizontal rotation, Pitch = vertical angle, Dist = zoom.
     // Target can be panned via SELECT + D-pad / X / Y.
+    // START + D-pad freelooks (rotates view direction from current position).
     float camDist = 9.0f, camYaw = 45.0f, camPitch = 40.0f;
     Vector3 camTarget = {0, 0.5f, 0};
+    // Freelook offsets: temporarily shift the look-at point while START is held
+    float freelookYaw = 0.0f, freelookPitch = 0.0f;
     Camera3D camera = {0};
     camera.up = {0, 1, 0};
     camera.fovy = 45.0f;
@@ -173,16 +176,14 @@ int main(int argc, char **argv) {
         }
 
         // ── CAMERA CONTROLS ──
-        // Default: L1/R1 = rotate horizontally, L2/R2 = zoom, X/Y = tilt
-        // SELECT held: D-pad = pan L/R/U/D, X/Y = pan forward/back
-        // START held: D-pad = orbit (rotate + tilt), X/Y = tilt
+        // Default: L1/R1 = rotate horizontally, L2/R2 = zoom, Y/X = tilt
+        // SELECT held: D-pad = pan L/R/U/D, Y/X = dolly forward/back
+        // START held: D-pad + Y/X = freelook (turn head from current position)
 
         if (selectHeld) {
             // PAN mode: translate camera target in screen-space directions
             float yr = camYaw * DEG2RAD;
-            // Camera's local right vector (horizontal, in XZ plane)
             Vector3 right = {cosf(yr), 0, -sinf(yr)};
-            // Camera's local forward vector (horizontal, in XZ plane)
             Vector3 forward = {sinf(yr), 0, cosf(yr)};
             float panSpeed = 4.0f * dt;
 
@@ -190,22 +191,29 @@ int main(int argc, char **argv) {
             if (IsKeyDown(MMF_DPAD_RIGHT)) camTarget = Vector3Add(camTarget, Vector3Scale(right,  panSpeed));
             if (IsKeyDown(MMF_DPAD_UP))    camTarget.y += panSpeed;
             if (IsKeyDown(MMF_DPAD_DOWN))  camTarget.y -= panSpeed;
-            if (IsKeyDown(MMF_X))          camTarget = Vector3Add(camTarget, Vector3Scale(forward, -panSpeed));
             if (IsKeyDown(MMF_Y))          camTarget = Vector3Add(camTarget, Vector3Scale(forward,  panSpeed));
+            if (IsKeyDown(MMF_X))          camTarget = Vector3Add(camTarget, Vector3Scale(forward, -panSpeed));
         } else if (startHeld) {
-            // ORBIT mode via D-pad: same as L/R and X/Y defaults
-            if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= 90.0f * dt;
-            if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += 90.0f * dt;
-            if (IsKeyDown(MMF_DPAD_UP))    camPitch += 90.0f * dt;
-            if (IsKeyDown(MMF_DPAD_DOWN))  camPitch -= 90.0f * dt;
-            if (IsKeyDown(MMF_X))          camPitch -= 90.0f * dt;
-            if (IsKeyDown(MMF_Y))          camPitch += 90.0f * dt;
+            // FREELOOK mode: rotate view direction from current camera position
+            // (like turning your head — camera stays in place, look-at changes)
+            if (IsKeyDown(MMF_DPAD_LEFT))  freelookYaw   -= 90.0f * dt;
+            if (IsKeyDown(MMF_DPAD_RIGHT)) freelookYaw   += 90.0f * dt;
+            if (IsKeyDown(MMF_DPAD_UP))    freelookPitch += 60.0f * dt;
+            if (IsKeyDown(MMF_DPAD_DOWN))  freelookPitch -= 60.0f * dt;
+            if (IsKeyDown(MMF_Y))          freelookPitch += 60.0f * dt;
+            if (IsKeyDown(MMF_X))          freelookPitch -= 60.0f * dt;
+        } else {
+            // Reset freelook smoothly when START is released
+            freelookYaw   *= 0.85f;
+            freelookPitch *= 0.85f;
+            if (fabsf(freelookYaw) < 0.5f) freelookYaw = 0;
+            if (fabsf(freelookPitch) < 0.5f) freelookPitch = 0;
         }
 
-        // Always-active camera controls (L/R, L2/R2, X/Y default)
+        // Always-active camera controls (L/R rotate, L2/R2 zoom, Y/X tilt)
         if (!selectHeld && !startHeld) {
-            if (IsKeyDown(MMF_X))  camPitch -= 90.0f * dt;
             if (IsKeyDown(MMF_Y))  camPitch += 90.0f * dt;
+            if (IsKeyDown(MMF_X))  camPitch -= 90.0f * dt;
         }
         if (IsKeyDown(MMF_L1))  camYaw  -= 90.0f * dt;
         if (IsKeyDown(MMF_R1))  camYaw  += 90.0f * dt;
@@ -217,14 +225,33 @@ int main(int argc, char **argv) {
         if (camDist < 3) camDist = 3;
         if (camDist > 20) camDist = 20;
 
-        // Convert spherical → Cartesian camera position
+        // Clamp freelook range
+        if (freelookYaw > 60) freelookYaw = 60;
+        if (freelookYaw < -60) freelookYaw = -60;
+        if (freelookPitch > 40) freelookPitch = 40;
+        if (freelookPitch < -40) freelookPitch = -40;
+
+        // Convert spherical → Cartesian camera position (orbit around target)
         float yr = camYaw * DEG2RAD, pr = camPitch * DEG2RAD;
         camera.position = {
             camTarget.x + camDist * cosf(pr) * sinf(yr),
             camTarget.y + camDist * sinf(pr),
             camTarget.z + camDist * cosf(pr) * cosf(yr),
         };
-        camera.target = camTarget;
+
+        // Apply freelook: offset the look-at point from the orbit target
+        if (freelookYaw != 0 || freelookPitch != 0) {
+            float flyaw = (camYaw + freelookYaw) * DEG2RAD;
+            float flpitch = freelookPitch * DEG2RAD;
+            // Look-at point shifted in the freelook direction
+            camera.target = {
+                camTarget.x - sinf(flyaw) * cosf(flpitch) * 2.0f,
+                camTarget.y + sinf(flpitch) * 2.0f,
+                camTarget.z - cosf(flyaw) * cosf(flpitch) * 2.0f,
+            };
+        } else {
+            camera.target = camTarget;
+        }
 
         // ── SETTLE DETECTION ──
         // After throwing, check each die every frame.  A die is "settled"

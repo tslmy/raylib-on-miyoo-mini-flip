@@ -1962,19 +1962,19 @@ void DrawHelpOverlay() {
     DrawText("A            Throw dice",         lx, y, sz, body); y += gap;
     DrawText("L / R        Rotate camera",      lx, y, sz, body); y += gap;
     DrawText("L2 / R2      Zoom in/out",        lx, y, sz, body); y += gap;
-    DrawText("X / Y        Tilt camera",        lx, y, sz, body); y += gap;
+    DrawText("Y / X        Tilt camera",        lx, y, sz, body); y += gap;
 
     y = 60 + 44;
     DrawTextBold("--- SELECT + ---", rx, y, sz, title);
     y += gap;
     DrawText("D-pad L/R    Pan left/right",     rx, y, sz, body); y += gap;
     DrawText("D-pad U/D    Pan up/down",        rx, y, sz, body); y += gap;
-    DrawText("X / Y        Pan fwd/back",       rx, y, sz, body); y += gap;
+    DrawText("Y / X        Pan fwd/back",       rx, y, sz, body); y += gap;
     y += gap;
     DrawTextBold("--- START + ---", rx, y, sz, title);
     y += gap;
-    DrawText("D-pad        Orbit camera",       rx, y, sz, body); y += gap;
-    DrawText("X / Y        Tilt camera",        rx, y, sz, body); y += gap;
+    DrawText("D-pad        Look around",        rx, y, sz, body); y += gap;
+    DrawText("Y / X        Look up/down",       rx, y, sz, body); y += gap;
 
     DrawText("Press SELECT or START to close", (SCR_W - MeasureText("Press SELECT or START to close", 14)) / 2,
              SCR_H - 50, 14, dim);
