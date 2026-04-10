@@ -78,7 +78,7 @@ done
 
 # Compile with MMF headers; keep code size down via section garbage collection.
 # Pass the same arch flags as the raylib build so the ABI matches.
-CFLAGS="-DGRAPHICS_API_OPENGL_11 -I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
+CFLAGS="-DGRAPHICS_API_OPENGL_11 -I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I$SRC_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
 # Link against the MMF sysroot to keep glibc compatibility.
 LDFLAGS="--sysroot=$SYSROOT $SYSROOT_LDFLAGS -Wl,--gc-sections $RPATH_LINKS"
 LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src -L$BULLET_BUILD_DIR"
@@ -87,11 +87,15 @@ mkdir -p "$OUT_DIR"
 
 # Build app + stat shim + TinyGL stubs (sysroot lacks libc_nonshared.a).
 $CXX $CFLAGS -c -o "$OUT_DIR/main.o" "$SRC_DIR/src/main.cpp"
+$CXX $CFLAGS -c -o "$OUT_DIR/physics.o" "$SRC_DIR/src/physics.cpp"
+$CXX $CFLAGS -c -o "$OUT_DIR/rendering.o" "$SRC_DIR/src/rendering.cpp"
 $CC $CFLAGS -c -o "$OUT_DIR/stat_shim.o" "$SRC_DIR/src/stat_shim.c"
 $CC $CFLAGS -c -o "$OUT_DIR/tinygl_stubs.o" "$SRC_DIR/src/tinygl_stubs.c"
 
 $CXX -o "$OUT_DIR/raylib-cube" \
   "$OUT_DIR/main.o" \
+  "$OUT_DIR/physics.o" \
+  "$OUT_DIR/rendering.o" \
   "$OUT_DIR/stat_shim.o" \
   $LDFLAGS \
   -Wl,--start-group -lraylib -lTinyGL -lBullet "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
