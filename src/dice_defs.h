@@ -51,8 +51,12 @@
 // Screen size and global constants
 // ═══════════════════════════════════════════════════════════════════
 
-static const int SCR_W = 752;   // MMF native framebuffer width  (pixels)
-static const int SCR_H = 560;   // MMF native framebuffer height (pixels)
+// Screen dimensions — set at runtime from the actual framebuffer/render
+// buffer size.  On the real MMF device, InitPlatform() queries /dev/fb0
+// and the render resolution may differ from what we request (e.g. 640×480
+// instead of 752×560).  Using runtime values ensures UI is always correct.
+extern int SCR_W;
+extern int SCR_H;
 
 // DIE_RADIUS scales every die to roughly this many "world units" from
 // center to corner.  3D engines use arbitrary "world units"; here 1

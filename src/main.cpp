@@ -45,6 +45,11 @@
 #include "physics.h"
 #include "rendering.h"
 
+// Screen dimensions — initialized to a reasonable default, then updated
+// to match the actual render buffer after InitWindow/InitPlatform.
+int SCR_W = 752;
+int SCR_H = 560;
+
 int main(int argc, char **argv) {
     // ── HEADLESS SCREENSHOT MODE ──
     // Used by `just try N`: run N frames with fixed dt, save screenshot, exit.
@@ -58,6 +63,14 @@ int main(int argc, char **argv) {
     srand((unsigned)time(nullptr));
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
     InitWindow(SCR_W, SCR_H, "Dice Roller - MMF");
+
+    // Update SCR_W/SCR_H to match the actual render buffer.
+    // On the real device, InitPlatform() may have overridden the size
+    // to match the framebuffer (e.g., 640×480 instead of 752×560).
+    SCR_W = GetRenderWidth();
+    SCR_H = GetRenderHeight();
+    TraceLog(LOG_INFO, "APP: Using render resolution %dx%d", SCR_W, SCR_H);
+
     SetTargetFPS(30);
 
     // ── INITIALIZATION ──
