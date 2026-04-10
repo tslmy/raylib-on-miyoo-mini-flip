@@ -1,3 +1,37 @@
+// ═══════════════════════════════════════════════════════════════════
+// physics.cpp — Bullet3 rigid-body simulation for dice
+// ═══════════════════════════════════════════════════════════════════
+//
+// PHYSICS SIMULATION OVERVIEW:
+//
+//   Every frame, the physics engine:
+//     1. Applies forces (gravity pulls dice downward).
+//     2. Detects collisions (dice vs. floor, dice vs. dice).
+//     3. Resolves collisions (bounce, slide, spin).
+//     4. Updates positions and rotations.
+//
+//   We then read those updated transforms to draw the dice in their
+//   new positions.  The rendering code never moves dice directly;
+//   it only reads where physics says they are.
+//
+// KEY CONCEPTS:
+//
+//   RIGID BODY — an object that has mass, position, rotation, and
+//     velocity.  "Rigid" means it doesn't deform (no squishing).
+//
+//   CONVEX HULL — the simplest 3D shape that contains all vertices.
+//     Think of wrapping the vertices in shrink-wrap.  Bullet uses
+//     this for fast collision detection.
+//
+//   RESTITUTION — "bounciness" (0 = no bounce, 1 = perfect bounce).
+//
+//   FRICTION — resistance to sliding (0 = ice, 1 = sandpaper).
+//
+//   INERTIA TENSOR — describes how mass is distributed in the shape,
+//     which determines how it spins (e.g., a dumbbell spins
+//     differently than a sphere).
+// ═══════════════════════════════════════════════════════════════════
+
 #include "physics.h"
 #include "btBulletDynamicsCommon.h"
 #include <cmath>
@@ -5,45 +39,57 @@
 // ═══════════════════════════════════════════════════════════════════
 // Shared mutable game state
 // ═══════════════════════════════════════════════════════════════════
+// These globals are written here and read by rendering and main.
 
 ActiveDie dice[MAX_ACTIVE_DICE];
 int numDice = 0;
-int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};
-int hotbarSel = 1;
-int riggedValue = -1;
+int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};  // start with 1×d4, 2×d6, 1×d8
+int hotbarSel = 1;           // d6 selected by default
+int riggedValue = -1;        // -1 = fair; 0-20 = always show this value
 
-const int DEBOUNCE_FRAMES = 12;
+const int DEBOUNCE_FRAMES = 12;  // ignore repeated presses for 12 frames (~0.4s)
 int debounceY = 0;
 int debounceX = 0;
 
 // ═══════════════════════════════════════════════════════════════════
-// Bullet3 physics
+// Bullet3 physics world
 // ═══════════════════════════════════════════════════════════════════
+//
+// Bullet3 requires several cooperating objects:
+//   - CollisionConfiguration: settings for collision algorithms
+//   - Dispatcher:  selects which algorithm to use for each pair
+//   - Broadphase:  fast rejection of distant objects (AABB tree)
+//   - Solver:      resolves contact forces and constraints
+//   - DynamicsWorld: ties them all together and steps the simulation
 
 static btDiscreteDynamicsWorld* world;
-static btRigidBody* floorBody;
+static btRigidBody* floorBody;  // infinite horizontal plane at y=0
 static btDefaultCollisionConfiguration* collisionConfig;
 static btCollisionDispatcher* dispatcher;
 static btDbvtBroadphase* broadphase;
 static btSequentialImpulseConstraintSolver* solver;
 
 void InitPhysics() {
+    // Create the Bullet3 pipeline: config → dispatcher → broadphase → solver → world
     collisionConfig = new btDefaultCollisionConfiguration();
     dispatcher = new btCollisionDispatcher(collisionConfig);
-    broadphase = new btDbvtBroadphase();
+    broadphase = new btDbvtBroadphase();   // bounding-volume hierarchy for fast culling
     solver = new btSequentialImpulseConstraintSolver();
     world = new btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfig);
-    world->setGravity(btVector3(0, -9.81f, 0));
+    world->setGravity(btVector3(0, -9.81f, 0));  // Earth gravity (m/s²), pointing down
 
+    // Create the floor: an infinite static plane at y=0, facing up (+Y normal).
+    // Mass = 0 means "static" — the floor never moves.
     btStaticPlaneShape* floorShape = new btStaticPlaneShape(btVector3(0, 1, 0), 0);
     btDefaultMotionState* floorMotion = new btDefaultMotionState();
     btRigidBody::btRigidBodyConstructionInfo floorCI(0, floorMotion, floorShape);
-    floorCI.m_restitution = 0.5f;
-    floorCI.m_friction = 0.8f;
+    floorCI.m_restitution = 0.5f;  // moderate bounce
+    floorCI.m_friction = 0.8f;     // fairly grippy (dice don't slide much)
     floorBody = new btRigidBody(floorCI);
     world->addRigidBody(floorBody);
 }
 
+// Remove all dice from the physics world and free their memory.
 static void ClearDice() {
     for (int i = 0; i < numDice; i++) {
         world->removeRigidBody(dice[i].body);
@@ -54,6 +100,10 @@ static void ClearDice() {
     numDice = 0;
 }
 
+// Copy a die type's raw vertices, normalize them to unit length, and
+// scale to the desired radius.  This turns the "canonical" coordinates
+// (e.g. {1,1,1}) into the actual 3D positions used for rendering and
+// physics collision shapes.
 static void SetupDieVerts(ActiveDie& d) {
     const DiceDef& def = DICE_DEFS[d.typeIdx];
     d.numVerts = def.numVerts;
@@ -61,6 +111,9 @@ static void SetupDieVerts(ActiveDie& d) {
     float r = DIE_RADIUS * def.scaleFactor;
     for (int i = 0; i < def.numVerts; i++) {
         Vector3 v = {def.rawVerts[i][0], def.rawVerts[i][1], def.rawVerts[i][2]};
+        // Normalize pushes all vertices to the unit sphere, then
+        // scale gives the desired radius.  This ensures every die
+        // type has consistent size regardless of raw coordinate range.
         d.verts[i] = Vector3Scale(Vector3Normalize(v), r);
     }
     for (int i = 0; i < def.numFaces; i++)
