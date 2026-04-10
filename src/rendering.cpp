@@ -14,6 +14,104 @@ const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
 // ═══════════════════════════════════════════════════════════════════
+// Spherical Harmonics L2 (9 coefficients × RGB) for environment IBL
+// ═══════════════════════════════════════════════════════════════════
+
+static float shCoeffs[9][3] = {};  // [basis_index][r,g,b]
+static bool  shReady = false;
+
+static void ProjectSkyboxToSH(const char* path) {
+    Image sky = LoadImage(path);
+    if (sky.data == NULL) return;
+    ImageFormat(&sky, PIXELFORMAT_UNCOMPRESSED_R8G8B8);
+
+    int w = sky.width, h = sky.height;
+    unsigned char* px = (unsigned char*)sky.data;
+
+    double acc[9][3] = {};
+    double weightSum = 0;
+
+    for (int y = 0; y < h; y++) {
+        float v = ((float)y + 0.5f) / h;
+        float theta = v * PI;           // polar angle [0, π]
+        float sinTheta = sinf(theta);
+        float cosTheta = cosf(theta);
+        float dOmega = sinTheta;        // solid angle weight
+
+        for (int x = 0; x < w; x++) {
+            float u = ((float)x + 0.5f) / w;
+            float phi = u * 2.0f * PI;  // azimuthal [0, 2π]
+
+            // Direction vector
+            float dx = sinTheta * sinf(phi);
+            float dy = cosTheta;
+            float dz = sinTheta * cosf(phi);
+
+            int i = (y * w + x) * 3;
+            float r = px[i] / 255.0f;
+            float g = px[i+1] / 255.0f;
+            float b = px[i+2] / 255.0f;
+
+            // SH L2 basis functions (real, orthonormal)
+            float basis[9];
+            basis[0] = 0.282095f;                          // Y00
+            basis[1] = 0.488603f * dy;                     // Y1,0
+            basis[2] = 0.488603f * dz;                     // Y1,1
+            basis[3] = 0.488603f * dx;                     // Y1,-1
+            basis[4] = 1.092548f * dx * dy;                // Y2,-1
+            basis[5] = 1.092548f * dy * dz;                // Y2,0 (note: yz)
+            basis[6] = 0.315392f * (3*dy*dy - 1);         // Y2,1
+            basis[7] = 1.092548f * dx * dz;                // Y2,-2
+            basis[8] = 0.546274f * (dx*dx - dz*dz);       // Y2,2
+
+            for (int k = 0; k < 9; k++) {
+                acc[k][0] += r * basis[k] * dOmega;
+                acc[k][1] += g * basis[k] * dOmega;
+                acc[k][2] += b * basis[k] * dOmega;
+            }
+            weightSum += dOmega;
+        }
+    }
+
+    // Normalize: integral over sphere is 4π, so scale = 4π / weightSum
+    float scale = (4.0f * PI) / (float)weightSum;
+    for (int k = 0; k < 9; k++) {
+        shCoeffs[k][0] = (float)(acc[k][0] * scale);
+        shCoeffs[k][1] = (float)(acc[k][1] * scale);
+        shCoeffs[k][2] = (float)(acc[k][2] * scale);
+    }
+    shReady = true;
+    UnloadImage(sky);
+    TraceLog(LOG_INFO, "SH: L2 projected from %s (%dx%d), DC=%.3f,%.3f,%.3f",
+             path, w, h, shCoeffs[0][0], shCoeffs[0][1], shCoeffs[0][2]);
+}
+
+// Evaluate SH irradiance at a given normal direction → returns RGB [0,1]
+static void EvalSH(Vector3 n, float* outR, float* outG, float* outB) {
+    if (!shReady) { *outR = 0.5f; *outG = 0.5f; *outB = 0.5f; return; }
+    float basis[9];
+    basis[0] = 0.282095f;
+    basis[1] = 0.488603f * n.y;
+    basis[2] = 0.488603f * n.z;
+    basis[3] = 0.488603f * n.x;
+    basis[4] = 1.092548f * n.x * n.y;
+    basis[5] = 1.092548f * n.y * n.z;
+    basis[6] = 0.315392f * (3*n.y*n.y - 1);
+    basis[7] = 1.092548f * n.x * n.z;
+    basis[8] = 0.546274f * (n.x*n.x - n.z*n.z);
+
+    float r = 0, g = 0, b = 0;
+    for (int k = 0; k < 9; k++) {
+        r += shCoeffs[k][0] * basis[k];
+        g += shCoeffs[k][1] * basis[k];
+        b += shCoeffs[k][2] * basis[k];
+    }
+    *outR = r < 0 ? 0 : r;
+    *outG = g < 0 ? 0 : g;
+    *outB = b < 0 ? 0 : b;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // MatCap (CPU-side image for per-vertex environment lookup)
 // ═══════════════════════════════════════════════════════════════════
 
@@ -165,12 +263,18 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
                        float dimFactor) {
     Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, pos));
 
-    // Diffuse
+    // Diffuse: SH environment irradiance + directional lights
+    float shR, shG, shB;
+    EvalSH(normal, &shR, &shG, &shB);
+    // SH provides ambient; directional lights add contrast
     float keyDot = Vector3DotProduct(normal, LIGHT_KEY);
     if (keyDot < 0) keyDot = 0;
     float fillDot = Vector3DotProduct(normal, LIGHT_FILL);
     if (fillDot < 0) fillDot = 0;
-    float diffuse = 0.50f + 0.35f * keyDot + 0.15f * fillDot;
+    // Blend: SH ambient (normalized ~0.5 base) + directional contribution
+    float diffR = shR * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
+    float diffG = shG * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
+    float diffB = shB * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
 
     // Blinn-Phong specular (pow-16) from key light
     Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
@@ -209,11 +313,11 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
     float rim = fresnel * 0.55f;
 
-    // Compose
+    // Compose: per-channel SH diffuse + specular + rim
     float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
-    float sr = base.r * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
-    float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
-    float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+    float sr = base.r * diffR * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+    float sg = base.g * diffG * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+    float sb = base.b * diffB * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
     // Environment reflection via MatCap (replaces crude up-down gradient)
     Color mc = SampleMatCap(normal, viewDir);
@@ -678,6 +782,7 @@ static void BakeLitFloorTexture(Image diffuseImg, Image bumpImg, Image roughImg)
 
 void InitWoodTexture() {
     LoadMatCap("matcap.png");
+    ProjectSkyboxToSH("skybox.png");
     BuildSkyProbes("skybox.png");
 
     Image diffuse = LoadImage("hardwood2_diffuse.png");
