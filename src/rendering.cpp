@@ -872,7 +872,7 @@ void DrawFloorReflections(Vector3 camPos) {
         rlBegin(RL_TRIANGLES);
         for (int f = 0; f < nf; f++) {
             int nv = dice[di].faces[f].count;
-            Vector3 wv[4];
+            Vector3 wv[MAX_FACE_VERTS];
             for (int v = 0; v < nv; v++) {
                 wv[v] = Vector3Transform(dice[di].verts[dice[di].faces[f].idx[v]], reflXf);
             }

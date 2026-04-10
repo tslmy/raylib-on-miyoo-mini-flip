@@ -43,7 +43,7 @@
 
 ActiveDie dice[MAX_ACTIVE_DICE];
 int numDice = 0;
-int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};  // start with 1×d4, 2×d6, 1×d8
+int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};
 int hotbarSel = 1;           // d6 selected by default
 int riggedValue = -1;        // -1 = fair; 0-20 = always show this value
 
