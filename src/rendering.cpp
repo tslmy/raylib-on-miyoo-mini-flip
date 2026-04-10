@@ -112,6 +112,79 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
 // PBR-inspired dice face lighting
 // ═══════════════════════════════════════════════════════════════════
 
+// Per-vertex lighting computation for Gouraud shading
+static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
+                       float dimFactor) {
+    Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, pos));
+
+    // Diffuse
+    float keyDot = Vector3DotProduct(normal, LIGHT_KEY);
+    if (keyDot < 0) keyDot = 0;
+    float fillDot = Vector3DotProduct(normal, LIGHT_FILL);
+    if (fillDot < 0) fillDot = 0;
+    float diffuse = 0.50f + 0.35f * keyDot + 0.15f * fillDot;
+
+    // Blinn-Phong specular (pow-16) from key light
+    Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
+    float specDot = Vector3DotProduct(normal, halfVec);
+    if (specDot < 0) specDot = 0;
+    float spec = specDot;
+    for (int p = 0; p < 4; p++) spec *= spec;
+
+    // Clearcoat specular (pow-32) with per-vertex procedural scratch
+    Vector3 ccN = normal;
+    {
+        unsigned int s2 = (unsigned int)(pos.x * 5000) * 48271u
+                        + (unsigned int)(pos.z * 5000) * 16807u
+                        + (unsigned int)(pos.y * 3000) * 65537u;
+        float sx = ((s2 & 0xFF) / 255.0f - 0.5f) * 0.15f;
+        float sz = (((s2 >> 8) & 0xFF) / 255.0f - 0.5f) * 0.05f;
+        ccN.x += sx; ccN.z += sz;
+        float len = sqrtf(ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z);
+        if (len > 0.001f) { ccN.x /= len; ccN.y /= len; ccN.z /= len; }
+    }
+    float ccSpecDot = Vector3DotProduct(ccN, halfVec);
+    if (ccSpecDot < 0) ccSpecDot = 0;
+    float ccSpec = ccSpecDot;
+    for (int p = 0; p < 5; p++) ccSpec *= ccSpec;
+    float clearcoat = 0.5f * ccSpec;
+
+    // Fill specular (pow-4)
+    Vector3 halfFill = Vector3Normalize(Vector3Add(LIGHT_FILL, viewDir));
+    float fillSpec = Vector3DotProduct(normal, halfFill);
+    if (fillSpec < 0) fillSpec = 0;
+    fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
+
+    // Fresnel rim glow
+    float NdotV = Vector3DotProduct(normal, viewDir);
+    if (NdotV < 0) NdotV = 0;
+    float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
+    float rim = fresnel * 0.55f;
+
+    // Compose
+    float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
+    float sr = base.r * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+    float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+    float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
+
+    // Environment reflection (Fresnel-weighted)
+    float envUp = normal.y * 0.5f + 0.5f;
+    float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);
+    float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
+    float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
+    float envMix = 0.10f + fresnel * 0.20f;
+    sr = sr * (1.0f - envMix) + envR * envMix;
+    sg = sg * (1.0f - envMix) + envG * envMix;
+    sb = sb * (1.0f - envMix) + envB * envMix;
+
+    if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
+
+    // Fresnel-based alpha: edges more opaque (glass refraction)
+    unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.6f);
+
+    return {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
+}
+
 void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
@@ -119,104 +192,58 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 
     Color base = d.baseColor;
 
+    // Pre-compute per-vertex averaged normals for smooth shading
+    Vector3 vertNormals[MAX_DIE_VERTS] = {};
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
-        Vector3 n = FaceNormal(wv, face);
-
-        Vector3 faceCtr = {0, 0, 0};
+        Vector3 fn = FaceNormal(wv, face);
         for (int j = 0; j < face.count; j++) {
-            faceCtr.x += wv[face.idx[j]].x;
-            faceCtr.y += wv[face.idx[j]].y;
-            faceCtr.z += wv[face.idx[j]].z;
+            int vi = face.idx[j];
+            vertNormals[vi].x += fn.x;
+            vertNormals[vi].y += fn.y;
+            vertNormals[vi].z += fn.z;
         }
-        faceCtr.x /= face.count; faceCtr.y /= face.count; faceCtr.z /= face.count;
-
-        // Procedural bump (packeddirt normal map)
-        {
-            unsigned int seed = (unsigned int)(faceCtr.x * 1000) * 7919u
-                              + (unsigned int)(faceCtr.z * 1000) * 104729u
-                              + (unsigned int)(f * 31337u);
-            float bx = ((seed & 0xFF) / 255.0f - 0.5f) * 0.08f;
-            float bz = (((seed >> 8) & 0xFF) / 255.0f - 0.5f) * 0.08f;
-            n.x += bx; n.z += bz;
-            float len = sqrtf(n.x*n.x + n.y*n.y + n.z*n.z);
-            if (len > 0.001f) { n.x /= len; n.y /= len; n.z /= len; }
-        }
-
-        Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, faceCtr));
-
-        // Diffuse
-        float keyDot  = Vector3DotProduct(n, LIGHT_KEY);
-        if (keyDot < 0) keyDot = 0;
-        float fillDot = Vector3DotProduct(n, LIGHT_FILL);
-        if (fillDot < 0) fillDot = 0;
-        float diffuse = 0.50f + 0.35f * keyDot + 0.15f * fillDot;
-
-        // Blinn-Phong specular (pow-16)
-        Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
-        float specDot = Vector3DotProduct(n, halfVec);
-        if (specDot < 0) specDot = 0;
-        float spec = specDot;
-        for (int p = 0; p < 4; p++) spec *= spec;
-
-        // Clearcoat with scratch normal (pow-32)
-        Vector3 ccN = n;
-        {
-            unsigned int s2 = (unsigned int)(faceCtr.x * 5000) * 48271u
-                            + (unsigned int)(faceCtr.z * 5000) * 16807u
-                            + (unsigned int)(f * 65537u);
-            float sx = ((s2 & 0xFF) / 255.0f - 0.5f) * 0.15f;
-            float sz = (((s2 >> 8) & 0xFF) / 255.0f - 0.5f) * 0.05f;
-            ccN.x += sx; ccN.z += sz;
-            float len = sqrtf(ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z);
-            if (len > 0.001f) { ccN.x /= len; ccN.y /= len; ccN.z /= len; }
-        }
-        float ccSpecDot = Vector3DotProduct(ccN, halfVec);
-        if (ccSpecDot < 0) ccSpecDot = 0;
-        float ccSpec = ccSpecDot;
-        for (int p = 0; p < 5; p++) ccSpec *= ccSpec;
-        float clearcoat = 0.5f * ccSpec;
-
-        // Fill specular (pow-4)
-        Vector3 halfFill = Vector3Normalize(Vector3Add(LIGHT_FILL, viewDir));
-        float fillSpec = Vector3DotProduct(n, halfFill);
-        if (fillSpec < 0) fillSpec = 0;
-        fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
-
-        // Fresnel rim — strong edge glow for glass-like appearance
-        float NdotV = Vector3DotProduct(n, viewDir);
-        if (NdotV < 0) NdotV = 0;
-        float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
-        float rim = fresnel * 0.55f;
-
-        // Compose
-        float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
-        float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
-
-        float sr = base.r * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
-        float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
-        float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
-
-        // Environment reflection — stronger at glancing angles (Fresnel)
-        float envUp = n.y * 0.5f + 0.5f;
-        float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);
-        float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
-        float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
-        float envMix = 0.10f + fresnel * 0.20f;  // more env reflection at edges
-        sr = sr * (1.0f - envMix) + envR * envMix;
-        sg = sg * (1.0f - envMix) + envG * envMix;
-        sb = sb * (1.0f - envMix) + envB * envMix;
-
-        if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
-
-        // Fresnel-based alpha: edges look more opaque (glass refraction effect)
-        unsigned char faceAlpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.6f);
-
-        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, faceAlpha};
-
-        for (int j = 1; j < face.count - 1; j++)
-            DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
     }
+    for (int i = 0; i < d.numVerts; i++)
+        vertNormals[i] = Vector3Normalize(vertNormals[i]);
+
+    // Pre-compute per-vertex lit colors
+    Color vertColors[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        vertColors[i] = LitVertex(wv[i], vertNormals[i], base, camPos, 1.0f);
+
+    // GL_SMOOTH for Gouraud interpolation (now works with alpha!)
+    glShadeModel(GL_SMOOTH);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    rlBegin(RL_TRIANGLES);
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+        float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
+
+        for (int j = 1; j < face.count - 1; j++) {
+            int i0 = face.idx[0], i1 = face.idx[j], i2 = face.idx[j+1];
+
+            // Dim non-value faces
+            Color c0 = vertColors[i0], c1 = vertColors[i1], c2 = vertColors[i2];
+            if (dimFactor < 1.0f) {
+                c0.r *= dimFactor; c0.g *= dimFactor; c0.b *= dimFactor;
+                c1.r *= dimFactor; c1.g *= dimFactor; c1.b *= dimFactor;
+                c2.r *= dimFactor; c2.g *= dimFactor; c2.b *= dimFactor;
+            }
+
+            rlColor4ub(c0.r, c0.g, c0.b, c0.a);
+            rlVertex3f(wv[i0].x, wv[i0].y, wv[i0].z);
+            rlColor4ub(c1.r, c1.g, c1.b, c1.a);
+            rlVertex3f(wv[i1].x, wv[i1].y, wv[i1].z);
+            rlColor4ub(c2.r, c2.g, c2.b, c2.a);
+            rlVertex3f(wv[i2].x, wv[i2].y, wv[i2].z);
+        }
+    }
+    rlEnd();
+
+    glShadeModel(GL_FLAT);
 }
 
 // Draw subtle edge wireframe for dice shape definition
