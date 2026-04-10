@@ -54,6 +54,7 @@ void DrawFloorReflections(Vector3 camPos);                          // Y-flipped
 // ── 2D UI overlay ──
 void DrawHotbar();                                                  // Dice selection bar at bottom
 void DrawTextBold(const char* text, int x, int y, int sz, Color col); // Bold text with shadow
+void DrawHelpOverlay();                                             // Semi-transparent controls reference
 
 // ── Post-processing ──
 extern bool enablePostProcess;  // Toggle bloom + depth fog (default: off on MMF)

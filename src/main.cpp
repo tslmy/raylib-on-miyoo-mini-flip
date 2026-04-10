@@ -17,9 +17,11 @@
 //     6. Optionally save screenshot (headless mode)
 //
 // CAMERA:
-//   Orbit camera — always looks at the center of the table (0, 0.5, 0).
-//   Controlled by D-Pad (rotate), L1/R1 (zoom in/out).
-//   Position is computed from spherical coordinates (yaw, pitch, distance).
+//   Orbit camera around a pannable target point (default: table center).
+//   L1/R1 = rotate, L2/R2 = zoom, X/Y = tilt.
+//   SELECT + D-pad = pan, SELECT + X/Y = dolly.
+//   START + D-pad/X/Y = orbit alternative.
+//   Position computed from spherical coords (yaw, pitch, distance) + target.
 //
 // TRANSPARENCY:
 //   Dice are semi-transparent (DICE_ALPHA).  For correct blending:
@@ -69,10 +71,12 @@ int main(int argc, char **argv) {
     InitPhysics();       // Set up Bullet3 world + ground plane
     ThrowAll();          // Spawn initial dice
 
-    // ── CAMERA (orbit) ──
-    // Spherical coordinates around the table center.
+    // ── CAMERA (orbit + pan) ──
+    // Spherical coordinates around a movable target point.
     // Yaw = horizontal rotation, Pitch = vertical angle, Dist = zoom.
+    // Target can be panned via SELECT + D-pad / X / Y.
     float camDist = 9.0f, camYaw = 45.0f, camPitch = 40.0f;
+    Vector3 camTarget = {0, 0.5f, 0};
     Camera3D camera = {0};
     camera.up = {0, 1, 0};
     camera.fovy = 45.0f;
@@ -80,6 +84,15 @@ int main(int argc, char **argv) {
 
     bool allSettled = false;  // true once all dice have stopped moving
     int totalResult = 0;     // sum of all face-up values
+
+    // Modifier key tracking: SELECT/START act as modifiers when held with
+    // other buttons, but toggle the help overlay when tapped alone.
+    bool selectUsedAsModifier = false;
+    bool startUsedAsModifier = false;
+    bool showHelp = false;
+
+    // Rig mode: hidden behind env var by default
+    bool rigEnabled = (getenv("RAYLIB_MMF_RIG") != NULL);
 
     // ═══════════════════════════════════════════════════════════════
     // MAIN GAME LOOP
@@ -92,35 +105,58 @@ int main(int argc, char **argv) {
         if (screenshotFrames > 0) dt = 1.0f / 30.0f;  // fixed dt for deterministic screenshots
         StepPhysics(dt);
 
-        // ── HOTBAR INPUT ──
-        // L2/R2: cycle through dice types
-        // Y: add one die of selected type (max 6 per type, MAX_ACTIVE_DICE total)
-        // X: remove one die of selected type
-        if (IsKeyPressed(MMF_L2)) hotbarSel = (hotbarSel + NUM_DICE_TYPES - 1) % NUM_DICE_TYPES;
-        if (IsKeyPressed(MMF_R2)) hotbarSel = (hotbarSel + 1) % NUM_DICE_TYPES;
+        // ── MODIFIER KEY TRACKING ──
+        // SELECT and START serve dual purpose: modifier (when held with
+        // other buttons) and toggle (when tapped alone).
+        bool selectHeld = IsKeyDown(MMF_SELECT);
+        bool startHeld  = IsKeyDown(MMF_START);
 
-        // Debounce prevents rapid-fire input from gamepad repeat
-        if (debounceY > 0) debounceY--;
-        if (debounceX > 0) debounceX--;
+        if (IsKeyPressed(MMF_SELECT)) selectUsedAsModifier = false;
+        if (IsKeyPressed(MMF_START))  startUsedAsModifier = false;
 
-        if (IsKeyPressed(MMF_Y) && debounceY == 0) {
-            int total = 0;
-            for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
-            if (total < MAX_ACTIVE_DICE && hotbarCount[hotbarSel] < 6)
-                hotbarCount[hotbarSel]++;
-            debounceY = DEBOUNCE_FRAMES;
-        }
-        if (IsKeyPressed(MMF_X) && debounceX == 0) {
-            if (hotbarCount[hotbarSel] > 0) hotbarCount[hotbarSel]--;
-            debounceX = DEBOUNCE_FRAMES;
+        // Helper: any action button pressed this frame?
+        bool anyActionPressed = IsKeyDown(MMF_DPAD_LEFT) || IsKeyDown(MMF_DPAD_RIGHT) ||
+                                IsKeyDown(MMF_DPAD_UP) || IsKeyDown(MMF_DPAD_DOWN) ||
+                                IsKeyDown(MMF_X) || IsKeyDown(MMF_Y) ||
+                                IsKeyDown(MMF_L1) || IsKeyDown(MMF_R1) ||
+                                IsKeyDown(MMF_L2) || IsKeyDown(MMF_R2);
+        if (selectHeld && anyActionPressed) selectUsedAsModifier = true;
+        if (startHeld && anyActionPressed)  startUsedAsModifier = true;
+
+        // On release, if not used as modifier → toggle help overlay
+        if (IsKeyReleased(MMF_SELECT) && !selectUsedAsModifier) showHelp = !showHelp;
+        if (IsKeyReleased(MMF_START) && !startUsedAsModifier)   showHelp = !showHelp;
+
+        // ── HOTBAR INPUT (D-pad, default mode) ──
+        // D-pad Left/Right: cycle through dice types
+        // D-pad Up: add die (max 6 per type, MAX_ACTIVE_DICE total)
+        // D-pad Down: remove die
+        if (!selectHeld && !startHeld) {
+            if (IsKeyPressed(MMF_DPAD_LEFT))
+                hotbarSel = (hotbarSel + NUM_DICE_TYPES - 1) % NUM_DICE_TYPES;
+            if (IsKeyPressed(MMF_DPAD_RIGHT))
+                hotbarSel = (hotbarSel + 1) % NUM_DICE_TYPES;
+
+            if (debounceY > 0) debounceY--;
+            if (debounceX > 0) debounceX--;
+
+            if (IsKeyPressed(MMF_DPAD_UP) && debounceY == 0) {
+                int total = 0;
+                for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
+                if (total < MAX_ACTIVE_DICE && hotbarCount[hotbarSel] < 6)
+                    hotbarCount[hotbarSel]++;
+                debounceY = DEBOUNCE_FRAMES;
+            }
+            if (IsKeyPressed(MMF_DPAD_DOWN) && debounceX == 0) {
+                if (hotbarCount[hotbarSel] > 0) hotbarCount[hotbarSel]--;
+                debounceX = DEBOUNCE_FRAMES;
+            }
         }
 
         // A button: throw all configured dice
-        // Spawns new rigid bodies and resets settle tracking.
-        // If rigged mode is active (B button), set target values for controlled outcome.
         if (IsKeyPressed(MMF_A)) {
             ThrowAll();
-            if (riggedValue >= 0) {
+            if (rigEnabled && riggedValue >= 0) {
                 for (int i = 0; i < numDice; i++) {
                     int maxVal = DICE_DEFS[dice[i].typeIdx].numValues;
                     dice[i].targetValue = (riggedValue <= maxVal) ? riggedValue : maxVal;
@@ -130,21 +166,51 @@ int main(int argc, char **argv) {
             totalResult = 0;
         }
 
-        // B button: cycle rigged value (debug/demo feature)
-        // When rigged, dice are snapped to show the target number after settling.
-        if (IsKeyPressed(MMF_B)) {
+        // B button: cycle rigged value (only if rig mode enabled via env var)
+        if (rigEnabled && IsKeyPressed(MMF_B)) {
             riggedValue++;
             if (riggedValue > 20) riggedValue = -1;
         }
 
-        // ── CAMERA ORBIT ──
-        // D-Pad rotates, L1/R1 zoom.  Clamped to prevent flipping or extreme zoom.
-        if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= 90.0f * dt;
-        if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += 90.0f * dt;
-        if (IsKeyDown(MMF_DPAD_UP))    camPitch += 90.0f * dt;
-        if (IsKeyDown(MMF_DPAD_DOWN))  camPitch -= 90.0f * dt;
-        if (IsKeyDown(MMF_L1))         camDist  -= 5.0f * dt;
-        if (IsKeyDown(MMF_R1))         camDist  += 5.0f * dt;
+        // ── CAMERA CONTROLS ──
+        // Default: L1/R1 = rotate horizontally, L2/R2 = zoom, X/Y = tilt
+        // SELECT held: D-pad = pan L/R/U/D, X/Y = pan forward/back
+        // START held: D-pad = orbit (rotate + tilt), X/Y = tilt
+
+        if (selectHeld) {
+            // PAN mode: translate camera target in screen-space directions
+            float yr = camYaw * DEG2RAD;
+            // Camera's local right vector (horizontal, in XZ plane)
+            Vector3 right = {cosf(yr), 0, -sinf(yr)};
+            // Camera's local forward vector (horizontal, in XZ plane)
+            Vector3 forward = {sinf(yr), 0, cosf(yr)};
+            float panSpeed = 4.0f * dt;
+
+            if (IsKeyDown(MMF_DPAD_LEFT))  camTarget = Vector3Add(camTarget, Vector3Scale(right, -panSpeed));
+            if (IsKeyDown(MMF_DPAD_RIGHT)) camTarget = Vector3Add(camTarget, Vector3Scale(right,  panSpeed));
+            if (IsKeyDown(MMF_DPAD_UP))    camTarget.y += panSpeed;
+            if (IsKeyDown(MMF_DPAD_DOWN))  camTarget.y -= panSpeed;
+            if (IsKeyDown(MMF_X))          camTarget = Vector3Add(camTarget, Vector3Scale(forward, -panSpeed));
+            if (IsKeyDown(MMF_Y))          camTarget = Vector3Add(camTarget, Vector3Scale(forward,  panSpeed));
+        } else if (startHeld) {
+            // ORBIT mode via D-pad: same as L/R and X/Y defaults
+            if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= 90.0f * dt;
+            if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += 90.0f * dt;
+            if (IsKeyDown(MMF_DPAD_UP))    camPitch += 90.0f * dt;
+            if (IsKeyDown(MMF_DPAD_DOWN))  camPitch -= 90.0f * dt;
+            if (IsKeyDown(MMF_X))          camPitch -= 90.0f * dt;
+            if (IsKeyDown(MMF_Y))          camPitch += 90.0f * dt;
+        }
+
+        // Always-active camera controls (L/R, L2/R2, X/Y default)
+        if (!selectHeld && !startHeld) {
+            if (IsKeyDown(MMF_X))  camPitch -= 90.0f * dt;
+            if (IsKeyDown(MMF_Y))  camPitch += 90.0f * dt;
+        }
+        if (IsKeyDown(MMF_L1))  camYaw  -= 90.0f * dt;
+        if (IsKeyDown(MMF_R1))  camYaw  += 90.0f * dt;
+        if (IsKeyDown(MMF_L2))  camDist -= 5.0f * dt;
+        if (IsKeyDown(MMF_R2))  camDist += 5.0f * dt;
 
         if (camPitch > 85) camPitch = 85;
         if (camPitch < 5) camPitch = 5;
@@ -152,14 +218,13 @@ int main(int argc, char **argv) {
         if (camDist > 20) camDist = 20;
 
         // Convert spherical → Cartesian camera position
-        // yr = yaw radians, pr = pitch radians
         float yr = camYaw * DEG2RAD, pr = camPitch * DEG2RAD;
         camera.position = {
-            camDist * cosf(pr) * sinf(yr),   // X = horizontal circle × yaw
-            camDist * sinf(pr),               // Y = vertical height from pitch
-            camDist * cosf(pr) * cosf(yr),   // Z = horizontal circle × yaw
+            camTarget.x + camDist * cosf(pr) * sinf(yr),
+            camTarget.y + camDist * sinf(pr),
+            camTarget.z + camDist * cosf(pr) * cosf(yr),
         };
-        camera.target = {0, 0.5f, 0};  // always look at table center
+        camera.target = camTarget;
 
         // ── SETTLE DETECTION ──
         // After throwing, check each die every frame.  A die is "settled"
@@ -292,6 +357,9 @@ int main(int argc, char **argv) {
         }
 
         DrawHotbar();  // dice selection UI at bottom
+
+        // Help overlay (toggled by tapping SELECT or START)
+        if (showHelp) DrawHelpOverlay();
 
         // Show FPS counter if environment variable is set (debug aid)
         if (getenv("RAYLIB_MMF_SHOWFPS"))
