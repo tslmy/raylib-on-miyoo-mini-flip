@@ -65,6 +65,7 @@ int main(int argc, char **argv) {
     InitWoodTexture();   // Load materials, SH, probes, bake floor
     InitSkybox();        // Load skybox panorama
     InitScratchTexture();// Convert scratch normal map to highlight overlay
+    InitDirtTexture();   // Convert dirt normal map to bump overlay
     InitPhysics();       // Set up Bullet3 world + ground plane
     ThrowAll();          // Spawn initial dice
 
@@ -243,6 +244,7 @@ int main(int argc, char **argv) {
             int di = diceOrder[i];
             Matrix xf = GetDieTransform(dice[di]);
             DrawDieFacesLit(dice[di], xf, camera.position);
+            DrawDieDirtOverlay(dice[di], xf, camera.position);
             DrawDieScratchOverlay(dice[di], xf, camera.position);
             DrawDieNumberDecals(dice[di], xf, camera.position);
             DrawDieEdges(dice[di], xf, camera.position);

@@ -1598,6 +1598,151 @@ void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Dirt/bump overlay (per-pixel surface roughness via texture mapping)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Similar concept to scratches, but from a "packed dirt" normal map
+// (opengameart.org CC0).  Instead of sharp linear scratches, this
+// creates broad bumps and dents that make the dice look worn and
+// tactile — like they've been handled many times.
+//
+// CONVERSION TECHNIQUE:
+//   For each pixel in the dirt normal map, we compute how a bump at
+//   that point would interact with a fixed overhead light:
+//     - Bumps facing the light → white pixel (highlight)
+//     - Crevices facing away  → black pixel (shadow)
+//     - Alpha = deviation magnitude (how bumpy this pixel is)
+//
+//   Drawn with standard alpha blending, white pixels brighten the
+//   surface and black pixels darken it — creating both highlights
+//   AND shadows from a single overlay pass.
+// ═══════════════════════════════════════════════════════════════════
+
+static Texture2D dirtTex;
+static bool dirtLoaded = false;
+
+void InitDirtTexture() {
+    Image img = LoadImage("dirt_bump.png");
+    if (img.data == NULL) return;
+
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    unsigned char* px = (unsigned char*)img.data;
+    int count = img.width * img.height;
+
+    // Fixed light direction for baking bump highlights/shadows.
+    // Points from upper-right — similar to LIGHT_KEY but in tangent space.
+    // Tangent-space Z = face normal direction.
+    float lx = 0.4f, ly = 0.3f, lz = 0.86f;  // roughly normalized
+
+    // NdotL for a perfectly flat surface (normal = 0,0,1)
+    float flatDot = lz;
+
+    for (int i = 0; i < count; i++) {
+        // Decode tangent-space normal from RGB
+        float nx = px[i*4 + 0] / 255.0f * 2.0f - 1.0f;
+        float ny = px[i*4 + 1] / 255.0f * 2.0f - 1.0f;
+        float nz = px[i*4 + 2] / 255.0f;
+        // Quick normalize
+        float invLen = fast_rsqrtf(nx*nx + ny*ny + nz*nz + 1e-6f);
+        nx *= invLen; ny *= invLen; nz *= invLen;
+
+        // How much does this pixel's bump deviate from flat lighting?
+        float NdotL = nx * lx + ny * ly + nz * lz;
+        float delta = (NdotL - flatDot) * 3.0f;  // amplify for visibility
+
+        if (delta > 0) {
+            // Bump faces light → white highlight
+            float a = delta;
+            if (a > 1.0f) a = 1.0f;
+            px[i*4 + 0] = 255;
+            px[i*4 + 1] = 255;
+            px[i*4 + 2] = 255;
+            px[i*4 + 3] = (unsigned char)(a * 80);
+        } else {
+            // Crevice → black shadow
+            float a = -delta;
+            if (a > 1.0f) a = 1.0f;
+            px[i*4 + 0] = 0;
+            px[i*4 + 1] = 0;
+            px[i*4 + 2] = 0;
+            px[i*4 + 3] = (unsigned char)(a * 50);
+        }
+    }
+
+    dirtTex = LoadTextureFromImage(img);
+    UnloadImage(img);
+    dirtLoaded = true;
+    TraceLog(LOG_INFO, "DIRT: Loaded dirt bump overlay texture");
+}
+
+// Draw dirt bump highlights/shadows on all visible faces.
+// Uses standard alpha blending: white pixels brighten (bumps catching
+// light), black pixels darken (crevices in shadow).
+void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,
+                        Vector3 camPos) {
+    if (!dirtLoaded) return;
+
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+
+        Vector3 center = {0, 0, 0};
+        for (int i = 0; i < face.count; i++)
+            center = Vector3Add(center, wv[face.idx[i]]);
+        center = Vector3Scale(center, 1.0f / face.count);
+
+        Vector3 n = FaceNormal(wv, face);
+        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
+        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
+
+        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
+        Vector3 t1 = fast_normalize(edge);
+        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
+
+        float minEdge = 1e9f;
+        for (int i = 0; i < face.count; i++) {
+            Vector3 e = Vector3Subtract(wv[face.idx[(i+1) % face.count]],
+                                        wv[face.idx[i]]);
+            float len = Vector3Length(e);
+            if (len < minEdge) minEdge = len;
+        }
+        float halfSize = minEdge * 0.48f;
+
+        // Offset between face surface and scratch overlay
+        Vector3 off = Vector3Scale(n, 0.002f);
+        Vector3 qCenter = Vector3Add(center, off);
+
+        Vector3 q0 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
+                                Vector3Scale(t2,  halfSize));
+        Vector3 q1 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
+                                Vector3Scale(t2,  halfSize));
+        Vector3 q2 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
+                                Vector3Scale(t2, -halfSize));
+        Vector3 q3 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
+                                Vector3Scale(t2, -halfSize));
+
+        // Different UV offset pattern than scratches for visual variety
+        float uOff = (float)(f * 61 % 8) / 8.0f;
+        float vOff = (float)(f * 43 % 8) / 8.0f;
+
+        rlSetTexture(dirtTex.id);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(255, 255, 255, 255);
+            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(uOff + 1.f, vOff);       rlVertex3f(q1.x, q1.y, q1.z);
+            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
+            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
+            rlTexCoord2f(uOff,       vOff + 1.f); rlVertex3f(q3.x, q3.y, q3.z);
+        rlEnd();
+        rlSetTexture(0);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Screen-space bloom post-processing (via TinyGL glPostProcess)
 // ═══════════════════════════════════════════════════════════════════
 //
@@ -1736,6 +1881,7 @@ void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
     if (skyboxLoaded) UnloadTexture(skyboxTex);
     if (scratchLoaded) UnloadTexture(scratchTex);
+    if (dirtLoaded) UnloadTexture(dirtTex);
     UnloadTexture(bakedFloorTex);
     if (matcapPixels) { RL_FREE(matcapPixels); matcapPixels = NULL; }
 }
