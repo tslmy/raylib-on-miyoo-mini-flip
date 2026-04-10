@@ -10,16 +10,19 @@ ASSETS_DIR="$SRC_DIR/assets"
 echo "============== Entered build script =============="
 
 # ────────── Pre-bake assets (runs on host x86) ──────────
-# Computes SH coefficients and bakes the lit floor texture at build time
-# so the ARM device doesn't have to spend seconds doing it at boot.
+# Computes SH coefficients, bakes the lit floor texture, and pre-slices
+# skybox tiles at build time so the ARM device boot is near-instant.
 PREBAKE_TOOL="$SRC_DIR/tools/prebake"
 STB_DIR="$RAYLIB_DIR/src/external"
 echo "------ Pre-baking assets ------"
 gcc -O2 -I"$STB_DIR" -o "$PREBAKE_TOOL" "$SRC_DIR/tools/prebake.c" -lm
 "$PREBAKE_TOOL" "$ASSETS_DIR" "$SRC_DIR/src"
-# prebake outputs: src/prebaked_sh.inc, src/baked_floor.png
-# Move baked floor to assets so it gets bundled with the binary
+# prebake outputs: src/prebaked_sh.inc, src/baked_floor.png, src/skybox_tile_*.png
+# Move baked assets to assets dir so they get bundled with the binary
 mv -f "$SRC_DIR/src/baked_floor.png" "$ASSETS_DIR/baked_floor.png"
+for tile in "$SRC_DIR"/src/skybox_tile_*.png; do
+    [ -f "$tile" ] && mv -f "$tile" "$ASSETS_DIR/"
+done
 
 # Raylib sources (submodule) must be present.
 test -d "$RAYLIB_DIR/src" || { echo "Raylib source not found at $RAYLIB_DIR/src" >&2; exit 1; }
@@ -132,7 +135,12 @@ cp -f "$ASSETS_DIR/config.json" "$OUT_DIR/config.json"
 
 test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.png"
 
-# Bundle skybox image for 3D environment.
+# Bundle pre-baked skybox tiles (preferred — small, pre-resized to 256×256).
+for tile in "$ASSETS_DIR"/skybox_tile_*.png; do
+    [ -f "$tile" ] && cp -f "$tile" "$OUT_DIR/"
+done
+
+# Bundle full skybox panorama (fallback if tiles are missing).
 test -f "$ASSETS_DIR/skybox.png" && cp -f "$ASSETS_DIR/skybox.png" "$OUT_DIR/skybox.png"
 
 # Bundle baked floor texture (pre-lit at build time by prebake tool).
