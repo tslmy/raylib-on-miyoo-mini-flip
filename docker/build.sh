@@ -125,6 +125,9 @@ test -f "$ASSETS_DIR/hardwood2_diffuse.png" && cp -f "$ASSETS_DIR/hardwood2_diff
 test -f "$ASSETS_DIR/hardwood2_bump.png" && cp -f "$ASSETS_DIR/hardwood2_bump.png" "$OUT_DIR/hardwood2_bump.png"
 test -f "$ASSETS_DIR/hardwood2_roughness.png" && cp -f "$ASSETS_DIR/hardwood2_roughness.png" "$OUT_DIR/hardwood2_roughness.png"
 
+# Bundle MatCap texture for dice environment reflections.
+test -f "$ASSETS_DIR/matcap.png" && cp -f "$ASSETS_DIR/matcap.png" "$OUT_DIR/matcap.png"
+
 # Bundle MI GFX libs when available (for hardware blit on MMF).
 if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
   mkdir -p "$OUT_DIR/libs"

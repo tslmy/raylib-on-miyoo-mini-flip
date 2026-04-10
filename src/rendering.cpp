@@ -4,6 +4,7 @@
 #include <GL/gl.h>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 
 // ═══════════════════════════════════════════════════════════════════
 // Lighting
@@ -11,6 +12,53 @@
 
 const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
+
+// ═══════════════════════════════════════════════════════════════════
+// MatCap (CPU-side image for per-vertex environment lookup)
+// ═══════════════════════════════════════════════════════════════════
+
+static Color* matcapPixels = NULL;
+static int    matcapSize   = 0;
+
+static void LoadMatCap(const char* path) {
+    Image img = LoadImage(path);
+    if (img.data == NULL) {
+        TraceLog(LOG_WARNING, "MATCAP: %s not found", path);
+        return;
+    }
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    matcapSize = img.width;  // assume square
+    matcapPixels = (Color*)RL_MALLOC(matcapSize * matcapSize * sizeof(Color));
+    memcpy(matcapPixels, img.data, matcapSize * matcapSize * sizeof(Color));
+    UnloadImage(img);
+    TraceLog(LOG_INFO, "MATCAP: Loaded %dx%d from %s", matcapSize, matcapSize, path);
+}
+
+// Sample matcap using view-space normal
+static Color SampleMatCap(Vector3 normal, Vector3 viewDir) {
+    if (!matcapPixels) return {180, 180, 190, 255};
+
+    // Build view-space basis from viewDir
+    Vector3 forward = {-viewDir.x, -viewDir.y, -viewDir.z};  // camera looks along -Z in view space
+    Vector3 up = {0, 1, 0};
+    Vector3 right = Vector3Normalize(Vector3CrossProduct(up, forward));
+    up = Vector3CrossProduct(forward, right);
+
+    // Project world normal into view space
+    float nx = Vector3DotProduct(normal, right);
+    float ny = Vector3DotProduct(normal, up);
+
+    // Map to UV [0,1]
+    float u = nx * 0.5f + 0.5f;
+    float v = 0.5f - ny * 0.5f;  // flip Y for image coords
+
+    int px = (int)(u * (matcapSize - 1));
+    int py = (int)(v * (matcapSize - 1));
+    if (px < 0) px = 0; if (px >= matcapSize) px = matcapSize - 1;
+    if (py < 0) py = 0; if (py >= matcapSize) py = matcapSize - 1;
+
+    return matcapPixels[py * matcapSize + px];
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Projected outline shadows
@@ -167,12 +215,10 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
     float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
-    // Environment reflection (Fresnel-weighted)
-    float envUp = normal.y * 0.5f + 0.5f;
-    float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);
-    float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
-    float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
-    float envMix = 0.10f + fresnel * 0.20f;
+    // Environment reflection via MatCap (replaces crude up-down gradient)
+    Color mc = SampleMatCap(normal, viewDir);
+    float envR = mc.r, envG = mc.g, envB = mc.b;
+    float envMix = 0.15f + fresnel * 0.25f;
     sr = sr * (1.0f - envMix) + envR * envMix;
     sg = sg * (1.0f - envMix) + envG * envMix;
     sb = sb * (1.0f - envMix) + envB * envMix;
@@ -631,6 +677,7 @@ static void BakeLitFloorTexture(Image diffuseImg, Image bumpImg, Image roughImg)
 }
 
 void InitWoodTexture() {
+    LoadMatCap("matcap.png");
     BuildSkyProbes("skybox.png");
 
     Image diffuse = LoadImage("hardwood2_diffuse.png");
@@ -917,4 +964,5 @@ void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
     if (skyboxLoaded) UnloadTexture(skyboxTex);
     UnloadTexture(bakedFloorTex);
+    if (matcapPixels) { RL_FREE(matcapPixels); matcapPixels = NULL; }
 }
