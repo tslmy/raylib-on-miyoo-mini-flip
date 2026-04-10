@@ -757,8 +757,8 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 // Screen-space bloom post-processing (via TinyGL glPostProcess)
 // ═══════════════════════════════════════════════════════════════════
 
-// Bloom: threshold 0.85, strength 0.3 — mimics Three.js UnrealBloomPass
-// TinyGL 32-bit pixel format: 0x00RRGGBB
+// Bloom + depth fog post-processing
+// TinyGL 32-bit pixel format: 0x00RRGGBB, z is 16-bit depth
 static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort z) {
     unsigned int r = (pixel >> 16) & 0xFF;
     unsigned int g = (pixel >> 8)  & 0xFF;
@@ -775,6 +775,19 @@ static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort 
         g = (unsigned int)(g * boost); if (g > 255) g = 255;
         b = (unsigned int)(b * boost); if (b > 255) b = 255;
     }
+
+    // Depth fog: distant objects fade toward a warm haze (very subtle)
+    // z=0 is far, z=0xFFFF is near in TinyGL's 16-bit Z-buffer
+    float depth = 1.0f - (float)z / 65535.0f;  // 0=near, 1=far
+    if (depth > 0.6f) {
+        float fogAmount = (depth - 0.6f) / 0.4f;
+        if (fogAmount > 1.0f) fogAmount = 1.0f;
+        fogAmount *= 0.15f;  // max 15% fog — just a hint of atmosphere
+        r = (unsigned int)(r * (1.0f - fogAmount) + 160 * fogAmount);
+        g = (unsigned int)(g * (1.0f - fogAmount) + 155 * fogAmount);
+        b = (unsigned int)(b * (1.0f - fogAmount) + 150 * fogAmount);
+    }
+
 
     return (r << 16) | (g << 8) | b;
 }
