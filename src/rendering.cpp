@@ -266,6 +266,8 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 // ═══════════════════════════════════════════════════════════════════
 
 static Texture2D woodTexture;
+static Image bumpImage;         // kept in CPU memory for per-vertex sampling
+static bool bumpLoaded = false;
 
 void InitWoodTexture() {
     Image img = LoadImage("hardwood2_diffuse.png");
@@ -275,33 +277,50 @@ void InitWoodTexture() {
     }
     woodTexture = LoadTextureFromImage(img);
     UnloadImage(img);
+
+    // Load bump map into CPU memory for vertex displacement sampling
+    bumpImage = LoadImage("hardwood2_bump.png");
+    if (bumpImage.data != NULL) {
+        ImageFormat(&bumpImage, PIXELFORMAT_UNCOMPRESSED_GRAYSCALE);
+        bumpLoaded = true;
+    } else {
+        TraceLog(LOG_WARNING, "FLOOR: hardwood2_bump.png not found, no bump displacement");
+    }
 }
 
-static float FloorBumpHeight(float x, float z) {
-    auto hash = [](float a, float b) -> float {
-        unsigned int h = (unsigned int)(a * 73.0f) * 374761393u
-                       + (unsigned int)(b * 73.0f) * 668265263u;
-        h = (h ^ (h >> 13)) * 1274126177u;
-        return (float)(h & 0xFFFF) / 65535.0f;
-    };
-    float bx = floorf(x * 2.0f), bz = floorf(z * 3.0f);
-    float h1 = hash(bx, bz) * 0.012f;
-    float fx = floorf(x * 8.0f), fz = floorf(z * 8.0f);
-    float h2 = hash(fx + 100, fz + 200) * 0.005f;
-    return h1 + h2;
+// Sample bump map at a UV coordinate (tiled), returning 0..1 height
+static float SampleBump(float u, float v) {
+    if (!bumpLoaded) return 0.0f;
+    // Tile: fract of UV
+    u = u - floorf(u);
+    v = v - floorf(v);
+    int px = (int)(u * bumpImage.width) % bumpImage.width;
+    int py = (int)(v * bumpImage.height) % bumpImage.height;
+    if (px < 0) px += bumpImage.width;
+    if (py < 0) py += bumpImage.height;
+    unsigned char* pixels = (unsigned char*)bumpImage.data;
+    return pixels[py * bumpImage.width + px] / 255.0f;
 }
 
-static Vector3 FloorBumpNormal(float x, float z) {
-    const float eps = 0.05f;
-    float hc = FloorBumpHeight(x, z);
-    float hx = FloorBumpHeight(x + eps, z);
-    float hz = FloorBumpHeight(x, z + eps);
+// Height from bump map at a world position, given the tiling parameters
+static float FloorBumpHeight(float x, float z, float halfSize, float tileRepeat) {
+    float u = (x + halfSize) / (2.0f * halfSize) * tileRepeat;
+    float v = (z + halfSize) / (2.0f * halfSize) * tileRepeat;
+    return SampleBump(u, v) * 0.015f;  // subtle displacement
+}
+
+// Compute bump normal from finite differences of the bump texture
+static Vector3 FloorBumpNormal(float x, float z, float halfSize, float tileRepeat) {
+    const float eps = 0.03f;
+    float hc = FloorBumpHeight(x, z, halfSize, tileRepeat);
+    float hx = FloorBumpHeight(x + eps, z, halfSize, tileRepeat);
+    float hz = FloorBumpHeight(x, z + eps, halfSize, tileRepeat);
     Vector3 n = {-(hx - hc) / eps, 1.0f, -(hz - hc) / eps};
     return Vector3Normalize(n);
 }
 
 void DrawTexturedGround(float halfSize, float tileRepeat) {
-    const int SUBDIV = 24;
+    const int SUBDIV = 32;  // higher subdivision to capture bump detail
     float step = 2.0f * halfSize / SUBDIV;
     float uvStep = tileRepeat / SUBDIV;
 
@@ -317,13 +336,13 @@ void DrawTexturedGround(float halfSize, float tileRepeat) {
             float u0 = xi * uvStep, u1 = (xi + 1) * uvStep;
             float v0 = zi * uvStep, v1 = (zi + 1) * uvStep;
 
-            float y00 = FloorBumpHeight(x0, z0);
-            float y10 = FloorBumpHeight(x1, z0);
-            float y01 = FloorBumpHeight(x0, z1);
-            float y11 = FloorBumpHeight(x1, z1);
+            float y00 = FloorBumpHeight(x0, z0, halfSize, tileRepeat);
+            float y10 = FloorBumpHeight(x1, z0, halfSize, tileRepeat);
+            float y01 = FloorBumpHeight(x0, z1, halfSize, tileRepeat);
+            float y11 = FloorBumpHeight(x1, z1, halfSize, tileRepeat);
 
             float cx = (x0 + x1) * 0.5f, cz = (z0 + z1) * 0.5f;
-            Vector3 n = FloorBumpNormal(cx, cz);
+            Vector3 n = FloorBumpNormal(cx, cz, halfSize, tileRepeat);
 
             float keyDot = Vector3DotProduct(n, LIGHT_KEY);
             if (keyDot < 0) keyDot = 0;
@@ -554,4 +573,5 @@ void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
     if (skyboxLoaded) UnloadTexture(skyboxTex);
     UnloadTexture(woodTexture);
+    if (bumpLoaded) UnloadImage(bumpImage);
 }
