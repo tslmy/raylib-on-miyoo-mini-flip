@@ -1,6 +1,6 @@
 {
-  "label": "Raylib Cube",
+  "label": "Dice roller",
   "icon": "icon.png",
   "launch": "launch.sh",
-  "description": "Simple 3D spinning cube demo"
+  "description": "Physically roll some glass dices."
 }
