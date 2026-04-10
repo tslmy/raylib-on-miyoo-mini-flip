@@ -19,7 +19,10 @@ GRAPHICS="${RAYLIB_GRAPHICS:-GRAPHICS_API_OPENGL_11}"
 
 TINYGL_DIR=/build/src/third_party/tinygl
 BULLET_DIR=/build/src/third_party/bullet3
-MMF_ARCH_FLAGS="-march=armv7-a -mfpu=neon-vfpv4"
+MMF_ARCH_FLAGS="-march=armv7-a -mfpu=neon-vfpv4 -mfloat-abi=hard"
+# -ffast-math: allow aggressive FP optimizations (NEON fused multiply-add,
+# reciprocal sqrt estimates, etc.) — safe for a dice game, big speedup.
+MMF_FAST_MATH="-ffast-math -ftree-vectorize"
 
 # ---------- Build TinyGL ----------
 echo "------ Building TinyGL ------"
@@ -28,7 +31,7 @@ rm -f "$TINYGL_DIR"/src/*.o "$TINYGL_DIR"/src/libTinyGL.a
 TINYGL_OBJS="api.o list.o vertex.o init.o matrix.o texture.o misc.o clear.o light.o clip.o select.o get.o zbuffer.o zline.o ztriangle.o zmath.o image_util.o msghandling.o arrays.o specbuf.o memory.o ztext.o zraster.o zpostprocess.o"
 for obj in $TINYGL_OBJS; do
   src="$TINYGL_DIR/src/$(echo "$obj" | sed 's/\.o$/.c/')"
-  $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS -Wno-unused-function -I"$TINYGL_DIR/include" -c "$src" -o "$TINYGL_DIR/src/$obj"
+  $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS $MMF_FAST_MATH -Wno-unused-function -I"$TINYGL_DIR/include" -c "$src" -o "$TINYGL_DIR/src/$obj"
 done
 (cd "$TINYGL_DIR/src" && rm -f libTinyGL.a && $AR rcs libTinyGL.a $TINYGL_OBJS)
 
@@ -36,7 +39,7 @@ done
 echo "------ Building Bullet3 ------"
 BULLET_BUILD_DIR="$BULLET_DIR/build_mmf"
 mkdir -p "$BULLET_BUILD_DIR"
-BULLET_CXXFLAGS="-O2 -fno-stack-protector -DNDEBUG -DBT_NO_PROFILE $MMF_ARCH_FLAGS -I$BULLET_DIR/src"
+BULLET_CXXFLAGS="-O3 -fno-stack-protector -DNDEBUG -DBT_NO_PROFILE $MMF_ARCH_FLAGS $MMF_FAST_MATH -I$BULLET_DIR/src"
 $CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btLinearMathAll.cpp"      -o "$BULLET_BUILD_DIR/btLinearMathAll.o"
 $CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btBulletCollisionAll.cpp" -o "$BULLET_BUILD_DIR/btBulletCollisionAll.o"
 $CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btBulletDynamicsAll.cpp"  -o "$BULLET_BUILD_DIR/btBulletDynamicsAll.o"
@@ -46,7 +49,7 @@ $CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btBulletDynamicsAll.cpp"  -o "$BULLET_
 cd "$RAYLIB_DIR/src"
 make clean || true
 # TinyGL provides <GL/gl.h>; put its include path first so raylib picks it up.
-RAYLIB_CFLAGS="-fno-stack-protector -DRAYLIB_MMF_FB -DRAYLIB_USE_TINYGL $MMF_ARCH_FLAGS -I$TINYGL_DIR/include"
+RAYLIB_CFLAGS="-fno-stack-protector -DRAYLIB_MMF_FB -DRAYLIB_USE_TINYGL $MMF_ARCH_FLAGS $MMF_FAST_MATH -I$TINYGL_DIR/include"
 echo "------ Building raylib ($PLATFORM, $GRAPHICS) ------"
 make \
   PLATFORM="$PLATFORM" \
@@ -78,7 +81,7 @@ done
 
 # Compile with MMF headers; keep code size down via section garbage collection.
 # Pass the same arch flags as the raylib build so the ABI matches.
-CFLAGS="-DGRAPHICS_API_OPENGL_11 -I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I$SRC_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
+CFLAGS="-DGRAPHICS_API_OPENGL_11 -I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I$SRC_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O3 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS $MMF_FAST_MATH"
 # Link against the MMF sysroot to keep glibc compatibility.
 LDFLAGS="--sysroot=$SYSROOT $SYSROOT_LDFLAGS -Wl,--gc-sections $RPATH_LINKS"
 LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src -L$BULLET_BUILD_DIR"
