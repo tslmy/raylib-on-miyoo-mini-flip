@@ -73,15 +73,79 @@ int main(int argc, char **argv) {
 
     SetTargetFPS(30);
 
-    // ── INITIALIZATION ──
-    // Order matters: InitWoodTexture loads matcap, computes SH, builds probes,
-    // and bakes the floor texture — all of which depend on skybox.png being readable.
-    InitNumberAtlas();   // Generate 0–20 number atlas texture
-    InitWoodTexture();   // Load materials, SH, probes, bake floor
-    InitSkybox();        // Load skybox panorama
-    InitScratchTexture();// Convert scratch normal map to highlight overlay
-    InitDirtTexture();   // Convert dirt normal map to bump overlay
-    InitPhysics();       // Set up Bullet3 world + ground plane
+    // ── BOOT SPLASH ──
+    // Show each initialization step on screen so the user knows
+    // the app is loading (bootup takes several seconds on device).
+    struct BootStep { const char* label; void (*fn)(); };
+    BootStep steps[] = {
+        {"Number atlas",     InitNumberAtlas},
+        {"Materials & floor",InitWoodTexture},
+        {"Skybox",           InitSkybox},
+        {"Scratch texture",  InitScratchTexture},
+        {"Dirt texture",     InitDirtTexture},
+        {"Physics engine",   InitPhysics},
+    };
+    const int numSteps = sizeof(steps) / sizeof(steps[0]);
+    const int titleSize = 24;
+    const int stepSize  = 16;
+    const int lineGap   = 24;
+    // Track completed step timings for display
+    const char* doneLabels[16];
+    float       doneTimes[16];
+    int         doneCount = 0;
+
+    for (int s = 0; s < numSteps; s++) {
+        double t0 = GetTime();
+
+        // Draw the splash screen showing progress so far
+        BeginDrawing();
+        ClearBackground({20, 18, 16, 255});
+
+        const char* title = "Dice Roller";
+        int tw = MeasureText(title, titleSize);
+        DrawText(title, (SCR_W - tw)/2, 30, titleSize, {255, 220, 50, 255});
+
+        int y = 70;
+        for (int i = 0; i < doneCount; i++) {
+            const char* line = TextFormat("  %s  %.2fs", doneLabels[i], doneTimes[i]);
+            DrawText(line, 40, y, stepSize, {100, 200, 100, 255});
+            y += lineGap;
+        }
+        // Current step (in progress)
+        const char* cur = TextFormat("> %s ...", steps[s].label);
+        DrawText(cur, 40, y, stepSize, {255, 255, 255, 255});
+
+        EndDrawing();
+
+        // Run the actual init function
+        steps[s].fn();
+
+        double elapsed = GetTime() - t0;
+        doneLabels[doneCount] = steps[s].label;
+        doneTimes[doneCount]  = (float)elapsed;
+        doneCount++;
+    }
+
+    // Final splash frame showing all timings
+    {
+        BeginDrawing();
+        ClearBackground({20, 18, 16, 255});
+        const char* title = "Dice Roller";
+        int tw = MeasureText(title, titleSize);
+        DrawText(title, (SCR_W - tw)/2, 30, titleSize, {255, 220, 50, 255});
+        int y = 70;
+        float total = 0;
+        for (int i = 0; i < doneCount; i++) {
+            const char* line = TextFormat("  %s  %.2fs", doneLabels[i], doneTimes[i]);
+            DrawText(line, 40, y, stepSize, {100, 200, 100, 255});
+            total += doneTimes[i];
+            y += lineGap;
+        }
+        const char* ready = TextFormat("  Ready!  Total: %.2fs", total);
+        DrawText(ready, 40, y + 8, stepSize, {255, 220, 50, 255});
+        EndDrawing();
+    }
+
     ThrowAll();          // Spawn initial dice
 
     // ── CAMERA (orbit + pan + freelook) ──
