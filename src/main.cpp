@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
     struct BootStep { const char* label; void (*fn)(); };
     BootStep steps[] = {
         {"Number atlas",     InitNumberAtlas},
-        {"Materials & floor",InitWoodTexture},
+        {"Materials",        InitWoodTexture},
         {"Skybox",           InitSkybox},
         {"Scratch texture",  InitScratchTexture},
         {"Dirt texture",     InitDirtTexture},

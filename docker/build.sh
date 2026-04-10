@@ -9,6 +9,18 @@ ASSETS_DIR="$SRC_DIR/assets"
 
 echo "============== Entered build script =============="
 
+# ────────── Pre-bake assets (runs on host x86) ──────────
+# Computes SH coefficients and bakes the lit floor texture at build time
+# so the ARM device doesn't have to spend seconds doing it at boot.
+PREBAKE_TOOL="$SRC_DIR/tools/prebake"
+STB_DIR="$RAYLIB_DIR/src/external"
+echo "------ Pre-baking assets ------"
+gcc -O2 -I"$STB_DIR" -o "$PREBAKE_TOOL" "$SRC_DIR/tools/prebake.c" -lm
+"$PREBAKE_TOOL" "$ASSETS_DIR" "$SRC_DIR/src"
+# prebake outputs: src/prebaked_sh.inc, src/baked_floor.png
+# Move baked floor to assets so it gets bundled with the binary
+mv -f "$SRC_DIR/src/baked_floor.png" "$ASSETS_DIR/baked_floor.png"
+
 # Raylib sources (submodule) must be present.
 test -d "$RAYLIB_DIR/src" || { echo "Raylib source not found at $RAYLIB_DIR/src" >&2; exit 1; }
 # MMF sysroot provides device glibc to avoid version mismatches.
@@ -123,7 +135,10 @@ test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.pn
 # Bundle skybox image for 3D environment.
 test -f "$ASSETS_DIR/skybox.png" && cp -f "$ASSETS_DIR/skybox.png" "$OUT_DIR/skybox.png"
 
-# Bundle hardwood floor textures.
+# Bundle baked floor texture (pre-lit at build time by prebake tool).
+test -f "$ASSETS_DIR/baked_floor.png" && cp -f "$ASSETS_DIR/baked_floor.png" "$OUT_DIR/baked_floor.png"
+
+# Bundle raw hardwood floor textures (fallback if baked floor is missing).
 test -f "$ASSETS_DIR/hardwood2_diffuse.png" && cp -f "$ASSETS_DIR/hardwood2_diffuse.png" "$OUT_DIR/hardwood2_diffuse.png"
 test -f "$ASSETS_DIR/hardwood2_bump.png" && cp -f "$ASSETS_DIR/hardwood2_bump.png" "$OUT_DIR/hardwood2_bump.png"
 test -f "$ASSETS_DIR/hardwood2_roughness.png" && cp -f "$ASSETS_DIR/hardwood2_roughness.png" "$OUT_DIR/hardwood2_roughness.png"
