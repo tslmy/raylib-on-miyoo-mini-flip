@@ -33,11 +33,6 @@ extern int hotbarCount[NUM_DICE_TYPES];   // how many of each type the user has 
 extern int hotbarSel;                     // which die type is selected in the UI
 extern int riggedValue;                   // -1 = fair roll; 0-20 = force this value
 
-// Button debounce (prevents rapid repeat from a single press)
-extern const int DEBOUNCE_FRAMES;
-extern int debounceY;
-extern int debounceX;
-
 // ── Physics lifecycle ──
 
 void InitPhysics();       // Create Bullet3 world with gravity and a floor plane

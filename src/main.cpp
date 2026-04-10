@@ -97,6 +97,26 @@ int main(int argc, char **argv) {
     // Rig mode: hidden behind env var by default
     bool rigEnabled = (getenv("RAYLIB_MMF_RIG") != NULL);
 
+    // ── KEY REPEAT (OS-style) ──
+    // On first press, action fires immediately.
+    // If held, waits INITIAL_DELAY frames, then repeats every REPEAT_INTERVAL.
+    // This mimics how desktop OSes handle held-down keys.
+    const int KEY_INITIAL_DELAY = 12;   // ~0.4s at 30fps before repeating
+    const int KEY_REPEAT_INTERVAL = 3;  // ~0.1s between repeats
+    struct KeyRepeat {
+        int holdFrames = 0;
+
+        bool Update(bool keyDown, int initDelay, int interval) {
+            if (!keyDown) { holdFrames = 0; return false; }
+            bool fire = (holdFrames == 0)
+                || (holdFrames >= initDelay
+                    && (holdFrames - initDelay) % interval == 0);
+            holdFrames++;
+            return fire;
+        }
+    };
+    KeyRepeat repLeft, repRight, repUp, repDown;
+
     // ═══════════════════════════════════════════════════════════════
     // MAIN GAME LOOP
     // ═══════════════════════════════════════════════════════════════
@@ -134,26 +154,26 @@ int main(int argc, char **argv) {
         // D-pad Left/Right: cycle through dice types
         // D-pad Up: add die (max 6 per type, MAX_ACTIVE_DICE total)
         // D-pad Down: remove die
+        // Uses OS-style key repeat: immediate on first press, then auto-repeat.
         if (!selectHeld && !startHeld) {
-            if (IsKeyPressed(MMF_DPAD_LEFT))
+            if (repLeft.Update(IsKeyDown(MMF_DPAD_LEFT), KEY_INITIAL_DELAY, KEY_REPEAT_INTERVAL))
                 hotbarSel = (hotbarSel + NUM_DICE_TYPES - 1) % NUM_DICE_TYPES;
-            if (IsKeyPressed(MMF_DPAD_RIGHT))
+            if (repRight.Update(IsKeyDown(MMF_DPAD_RIGHT), KEY_INITIAL_DELAY, KEY_REPEAT_INTERVAL))
                 hotbarSel = (hotbarSel + 1) % NUM_DICE_TYPES;
 
-            if (debounceY > 0) debounceY--;
-            if (debounceX > 0) debounceX--;
-
-            if (IsKeyPressed(MMF_DPAD_UP) && debounceY == 0) {
+            if (repUp.Update(IsKeyDown(MMF_DPAD_UP), KEY_INITIAL_DELAY, KEY_REPEAT_INTERVAL)) {
                 int total = 0;
                 for (int t = 0; t < NUM_DICE_TYPES; t++) total += hotbarCount[t];
                 if (total < MAX_ACTIVE_DICE && hotbarCount[hotbarSel] < 6)
                     hotbarCount[hotbarSel]++;
-                debounceY = DEBOUNCE_FRAMES;
             }
-            if (IsKeyPressed(MMF_DPAD_DOWN) && debounceX == 0) {
+            if (repDown.Update(IsKeyDown(MMF_DPAD_DOWN), KEY_INITIAL_DELAY, KEY_REPEAT_INTERVAL)) {
                 if (hotbarCount[hotbarSel] > 0) hotbarCount[hotbarSel]--;
-                debounceX = DEBOUNCE_FRAMES;
             }
+        } else {
+            // Reset repeat state when modifiers are held (D-pad is used for pan/look)
+            repLeft.holdFrames = repRight.holdFrames = 0;
+            repUp.holdFrames = repDown.holdFrames = 0;
         }
 
         // A button: throw all configured dice
