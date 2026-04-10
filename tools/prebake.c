@@ -14,7 +14,12 @@
 //      diffuse, bump, and roughness maps with directional + sky lighting.
 //      Output: baked_floor.png
 //
-// This eliminates ~90% of the "Materials & floor" boot time on device.
+//   3. Skybox tiles — pre-slice the panorama into SKYBOX_TILES strips,
+//      each pre-resized to 256×256 (the TinyGL texture limit).
+//      Output: skybox_tile_0.png … skybox_tile_7.png
+//
+// This eliminates ~90% of the "Materials & floor" boot time on device
+// and removes the need to load the full panorama at runtime.
 //
 // Usage: prebake <assets_dir> <output_dir>
 
@@ -27,6 +32,8 @@
 #include "stb_image.h"
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
+#define STB_IMAGE_RESIZE_IMPLEMENTATION
+#include "stb_image_resize2.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -371,6 +378,57 @@ static int bake_floor(const char* diffuse_path, const char* bump_path,
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Skybox tile prebake
+// ═══════════════════════════════════════════════════════════════════
+//
+// Slice the panorama into SKYBOX_TILES horizontal strips and resize
+// each to 256×256 (the TinyGL texture limit).  At runtime we just
+// load the small PNGs — no full-panorama decode or pixel slicing.
+
+#define SKYBOX_TILES 8
+#define TILE_SIZE    256
+
+static int prebake_skybox_tiles(const char* skybox_path, const char* out_dir) {
+    int w, h, ch;
+    unsigned char* px = stbi_load(skybox_path, &w, &h, &ch, 4);
+    if (!px) {
+        fprintf(stderr, "prebake: cannot load %s for skybox tiles\n", skybox_path);
+        return -1;
+    }
+
+    int tileW = w / SKYBOX_TILES;
+
+    for (int t = 0; t < SKYBOX_TILES; t++) {
+        // Extract vertical strip
+        unsigned char* strip = (unsigned char*)malloc(tileW * h * 4);
+        int srcX = t * tileW;
+        for (int y = 0; y < h; y++) {
+            memcpy(strip + y * tileW * 4,
+                   px + (y * w + srcX) * 4,
+                   tileW * 4);
+        }
+
+        // Resize to 256×256
+        unsigned char* resized = (unsigned char*)malloc(TILE_SIZE * TILE_SIZE * 4);
+        stbir_resize_uint8_linear(strip, tileW, h, tileW * 4,
+                                  resized, TILE_SIZE, TILE_SIZE, TILE_SIZE * 4,
+                                  STBIR_RGBA);
+
+        char out_path[512];
+        snprintf(out_path, sizeof(out_path), "%s/skybox_tile_%d.png", out_dir, t);
+        stbi_write_png(out_path, TILE_SIZE, TILE_SIZE, 4, resized, TILE_SIZE * 4);
+
+        free(strip);
+        free(resized);
+    }
+
+    stbi_image_free(px);
+    fprintf(stderr, "prebake: wrote %d skybox tiles (%dx%d → %dx%d each)\n",
+            SKYBOX_TILES, tileW, h, TILE_SIZE, TILE_SIZE);
+    return 0;
+}
+
+// ═══════════════════════════════════════════════════════════════════
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -402,6 +460,10 @@ int main(int argc, char** argv) {
     snprintf(rough_path, sizeof(rough_path), "%s/hardwood2_roughness.png", assets);
     snprintf(out_floor, sizeof(out_floor), "%s/baked_floor.png", output);
     bake_floor(diff_path, bump_path, rough_path, out_floor);
+
+    // 4. Skybox tiles (pre-sliced + pre-resized to 256×256)
+    snprintf(path, sizeof(path), "%s/skybox.png", assets);
+    prebake_skybox_tiles(path, output);
 
     fprintf(stderr, "prebake: all done\n");
     return 0;
