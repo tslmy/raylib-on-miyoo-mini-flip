@@ -174,6 +174,9 @@ int main(int argc, char **argv) {
     // Rig mode: hidden behind env var by default
     bool rigEnabled = (getenv("RAYLIB_MMF_RIG") != NULL);
 
+    // Wireframe toggle:
+    bool wireframeEnabled = (getenv("DIE_WIREFRAME") != NULL);
+
     // ── KEY REPEAT (OS-style) ──
     // On first press, action fires immediately.
     // If held, waits INITIAL_DELAY frames, then repeats every REPEAT_INTERVAL.
@@ -440,7 +443,8 @@ int main(int argc, char **argv) {
             DrawDieDirtOverlay(dice[di], xforms[di], camera.position);
             DrawDieScratchOverlay(dice[di], xforms[di], camera.position);
             DrawDieNumberDecals(dice[di], xforms[di], camera.position);
-            DrawDieEdges(dice[di], xforms[di], camera.position);
+            if (wireframeEnabled)
+                DrawDieEdges(dice[di], xforms[di], camera.position);
         }
 
         // ── GEOMETRY BLOOM ──
