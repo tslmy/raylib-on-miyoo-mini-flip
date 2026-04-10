@@ -58,8 +58,11 @@ static const int SCR_H = 560;   // MMF native framebuffer height (pixels)
 static const float DIE_RADIUS = 0.7f;
 
 // DICE_ALPHA controls how see-through the dice are.  255 = fully
-// opaque, 0 = invisible.  160 (~63%) gives a translucent glass look.
-static const int DICE_ALPHA = 160;
+// opaque, 0 = invisible.  Lower values give a more glass-like look.
+// Combined with Fresnel-driven edge opacity in LitVertex(), this
+// simulates glass with IOR ~1.5: transparent when viewed head-on,
+// reflective and opaque at glancing angles.
+static const int DICE_ALPHA = 130;
 
 // Hard cap on simultaneous dice (memory is pre-allocated).
 #define MAX_ACTIVE_DICE 12

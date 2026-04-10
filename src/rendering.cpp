@@ -590,7 +590,7 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     float NdotV = Vector3DotProduct(normal, viewDir);
     if (NdotV < 0) NdotV = 0;
     float fresnel = 0.04f + 0.96f * pow5f(1.0f - NdotV);
-    float rim = fresnel * 0.55f;  // scale for visual taste
+    float rim = fresnel * 0.70f;  // stronger rim for glass-like IOR 1.5
 
     // ── COMPOSE: add up all lighting contributions ──
     // Final color = base_color × diffuse × dim + white × specular + white × rim
@@ -606,7 +606,7 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     // reflection (physically correct for glass/glossy materials).
     Color mc = SampleMatCap(normal, viewDir);
     float envR = mc.r, envG = mc.g, envB = mc.b;
-    float envMix = 0.15f + fresnel * 0.25f;  // 15% base + up to 25% at edges
+    float envMix = 0.12f + fresnel * 0.45f;  // 12% base + strong Fresnel-driven edge reflections
     sr = sr * (1.0f - envMix) + envR * envMix;  // linear interpolation
     sg = sg * (1.0f - envMix) + envG * envMix;
     sb = sb * (1.0f - envMix) + envB * envMix;
@@ -614,9 +614,11 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
     // ── ALPHA (TRANSPARENCY) ──
-    // Base alpha = DICE_ALPHA (160, ~63% opaque).
-    // Fresnel makes edges MORE opaque (simulates glass refraction).
-    unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.6f);
+    // Glass-like IOR behavior: center of face is mostly transparent
+    // (low DICE_ALPHA), but edges become nearly opaque due to Fresnel.
+    // This mimics how real glass is see-through head-on but mirror-like
+    // at grazing angles (total internal reflection).
+    unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.85f);
 
     return {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
 }
