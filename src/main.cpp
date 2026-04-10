@@ -175,6 +175,7 @@ int main(int argc, char **argv) {
             Matrix xf = GetDieTransform(dice[di]);
             DrawDieFacesLit(dice[di], xf, camera.position);
             DrawDieNumberDecals(dice[di], xf, camera.position);
+            DrawDieEdges(dice[di], xf, camera.position);
         }
 
         // Bloom glow pass

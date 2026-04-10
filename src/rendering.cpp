@@ -219,6 +219,45 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     }
 }
 
+// Draw subtle edge wireframe for dice shape definition
+void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos) {
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    // Collect unique edges from faces
+    struct Edge { int a, b; };
+    Edge edges[128];
+    int numEdges = 0;
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+        for (int i = 0; i < face.count; i++) {
+            int a = face.idx[i], b = face.idx[(i + 1) % face.count];
+            if (a > b) { int t = a; a = b; b = t; }
+            bool dup = false;
+            for (int e = 0; e < numEdges; e++)
+                if (edges[e].a == a && edges[e].b == b) { dup = true; break; }
+            if (!dup && numEdges < 128)
+                edges[numEdges++] = {a, b};
+        }
+    }
+
+    // Draw edges as thin lines offset slightly toward camera
+    Vector3 center = {xform.m12, xform.m13, xform.m14};
+    Vector3 toCamera = Vector3Normalize(Vector3Subtract(camPos, center));
+
+    rlBegin(RL_LINES);
+    for (int i = 0; i < numEdges; i++) {
+        Vector3 a = Vector3Add(wv[edges[i].a], Vector3Scale(toCamera, 0.008f));
+        Vector3 b = Vector3Add(wv[edges[i].b], Vector3Scale(toCamera, 0.008f));
+        rlColor4ub(255, 255, 255, 40);
+        rlVertex3f(a.x, a.y, a.z);
+        rlVertex3f(b.x, b.y, b.z);
+    }
+    rlEnd();
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Geometry-based bloom
 // ═══════════════════════════════════════════════════════════════════
