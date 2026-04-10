@@ -2,6 +2,7 @@ FROM ubuntu:22.04
 
 RUN apt-get update && \
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  gcc \
   gcc-arm-linux-gnueabihf \
   g++-arm-linux-gnueabihf \
   binutils-arm-linux-gnueabihf \
