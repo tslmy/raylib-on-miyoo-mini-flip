@@ -262,12 +262,101 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Hardwood floor texture + bump displacement
+// Hardwood floor texture + bump displacement + skybox-derived IBL
 // ═══════════════════════════════════════════════════════════════════
 
 static Texture2D woodTexture;
 static Image bumpImage;         // kept in CPU memory for per-vertex sampling
 static bool bumpLoaded = false;
+static float bumpMin = 0, bumpScale = 1;  // for normalizing to full 0..1 range
+
+// Simplified irradiance probe: dominant light directions extracted from skybox
+#define NUM_SKY_PROBES 6
+struct SkyProbe { Vector3 dir; float r, g, b; };
+static SkyProbe skyProbes[NUM_SKY_PROBES];
+static bool skyProbesReady = false;
+
+// Extract dominant light directions from the skybox texture.
+// Scans the equirectangular image for bright regions and converts
+// pixel positions to 3D directions — a simplified version of the
+// HDR environment lighting in the Three.js version.
+static void BuildSkyProbes(const char* skyboxPath) {
+    Image sky = LoadImage(skyboxPath);
+    if (sky.data == NULL) return;
+    ImageFormat(&sky, PIXELFORMAT_UNCOMPRESSED_R8G8B8);
+
+    int w = sky.width, h = sky.height;
+    unsigned char* px = (unsigned char*)sky.data;
+
+    // Divide into a 6×3 grid, find the brightest cell in each row-band
+    const int COLS = 6, ROWS = 3;
+    int probeIdx = 0;
+    for (int gy = 0; gy < ROWS && probeIdx < NUM_SKY_PROBES; gy++) {
+        // Find the two brightest columns in this row band
+        float bestLum[2] = {0, 0};
+        int bestCol[2] = {0, 1};
+        for (int gx = 0; gx < COLS; gx++) {
+            float sumR = 0, sumG = 0, sumB = 0;
+            int count = 0;
+            int x0 = gx * w / COLS, x1 = (gx + 1) * w / COLS;
+            int y0 = gy * h / ROWS, y1 = (gy + 1) * h / ROWS;
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++) {
+                    int i = (y * w + x) * 3;
+                    sumR += px[i]; sumG += px[i+1]; sumB += px[i+2];
+                    count++;
+                }
+            float avgR = sumR / count, avgG = sumG / count, avgB = sumB / count;
+            float lum = avgR * 0.299f + avgG * 0.587f + avgB * 0.114f;
+            for (int k = 0; k < 2; k++) {
+                if (lum > bestLum[k]) {
+                    // Shift down
+                    if (k == 0) { bestLum[1] = bestLum[0]; bestCol[1] = bestCol[0]; }
+                    bestLum[k] = lum;
+                    bestCol[k] = gx;
+                    break;
+                }
+            }
+        }
+
+        for (int k = 0; k < 2 && probeIdx < NUM_SKY_PROBES; k++) {
+            int gx = bestCol[k];
+            // Cell center in equirectangular coords
+            float u = ((float)gx + 0.5f) / COLS;
+            float v = ((float)gy + 0.5f) / ROWS;
+            // Convert to spherical: u→azimuth, v→elevation
+            float azimuth = u * 2.0f * PI;
+            float elevation = (0.5f - v) * PI;  // top=+PI/2, bottom=-PI/2
+            Vector3 dir = {
+                cosf(elevation) * sinf(azimuth),
+                sinf(elevation),
+                cosf(elevation) * cosf(azimuth),
+            };
+
+            // Average color of this cell (normalized to 0..1, boosted)
+            int x0 = gx * w / COLS, x1 = (gx + 1) * w / COLS;
+            int y0 = gy * h / ROWS, y1 = (gy + 1) * h / ROWS;
+            float sumR = 0, sumG = 0, sumB = 0;
+            int count = 0;
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++) {
+                    int i = (y * w + x) * 3;
+                    sumR += px[i]; sumG += px[i+1]; sumB += px[i+2];
+                    count++;
+                }
+
+            skyProbes[probeIdx].dir = Vector3Normalize(dir);
+            skyProbes[probeIdx].r = (sumR / count) / 255.0f;
+            skyProbes[probeIdx].g = (sumG / count) / 255.0f;
+            skyProbes[probeIdx].b = (sumB / count) / 255.0f;
+            probeIdx++;
+        }
+    }
+
+    UnloadImage(sky);
+    skyProbesReady = true;
+    TraceLog(LOG_INFO, "SKY: Built %d irradiance probes from skybox", probeIdx);
+}
 
 void InitWoodTexture() {
     Image img = LoadImage("hardwood2_diffuse.png");
@@ -278,20 +367,29 @@ void InitWoodTexture() {
     woodTexture = LoadTextureFromImage(img);
     UnloadImage(img);
 
-    // Load bump map into CPU memory for vertex displacement sampling
     bumpImage = LoadImage("hardwood2_bump.png");
     if (bumpImage.data != NULL) {
         ImageFormat(&bumpImage, PIXELFORMAT_UNCOMPRESSED_GRAYSCALE);
         bumpLoaded = true;
-    } else {
-        TraceLog(LOG_WARNING, "FLOOR: hardwood2_bump.png not found, no bump displacement");
+        // Find actual min/max to normalize the narrow 183-255 range to full 0..1
+        unsigned char* bp = (unsigned char*)bumpImage.data;
+        int total = bumpImage.width * bumpImage.height;
+        unsigned char lo = 255, hi = 0;
+        for (int i = 0; i < total; i++) {
+            if (bp[i] < lo) lo = bp[i];
+            if (bp[i] > hi) hi = bp[i];
+        }
+        bumpMin = lo / 255.0f;
+        bumpScale = (hi > lo) ? 1.0f / ((hi - lo) / 255.0f) : 1.0f;
+        TraceLog(LOG_INFO, "BUMP: range %d-%d, normalized scale=%.2f", lo, hi, bumpScale);
     }
+
+    BuildSkyProbes("skybox.png");
 }
 
-// Sample bump map at a UV coordinate (tiled), returning 0..1 height
+// Sample bump map at a UV coordinate (tiled), returning normalized 0..1 height
 static float SampleBump(float u, float v) {
     if (!bumpLoaded) return 0.0f;
-    // Tile: fract of UV
     u = u - floorf(u);
     v = v - floorf(v);
     int px = (int)(u * bumpImage.width) % bumpImage.width;
@@ -299,19 +397,18 @@ static float SampleBump(float u, float v) {
     if (px < 0) px += bumpImage.width;
     if (py < 0) py += bumpImage.height;
     unsigned char* pixels = (unsigned char*)bumpImage.data;
-    return pixels[py * bumpImage.width + px] / 255.0f;
+    float raw = pixels[py * bumpImage.width + px] / 255.0f;
+    return (raw - bumpMin) * bumpScale;  // full 0..1 range
 }
 
-// Height from bump map at a world position, given the tiling parameters
 static float FloorBumpHeight(float x, float z, float halfSize, float tileRepeat) {
     float u = (x + halfSize) / (2.0f * halfSize) * tileRepeat;
     float v = (z + halfSize) / (2.0f * halfSize) * tileRepeat;
-    return SampleBump(u, v) * 0.015f;  // subtle displacement
+    return SampleBump(u, v) * 0.035f;  // stronger displacement
 }
 
-// Compute bump normal from finite differences of the bump texture
 static Vector3 FloorBumpNormal(float x, float z, float halfSize, float tileRepeat) {
-    const float eps = 0.03f;
+    const float eps = 0.02f;  // tighter sampling for sharper gradients
     float hc = FloorBumpHeight(x, z, halfSize, tileRepeat);
     float hx = FloorBumpHeight(x + eps, z, halfSize, tileRepeat);
     float hz = FloorBumpHeight(x, z + eps, halfSize, tileRepeat);
@@ -320,7 +417,7 @@ static Vector3 FloorBumpNormal(float x, float z, float halfSize, float tileRepea
 }
 
 void DrawTexturedGround(float halfSize, float tileRepeat) {
-    const int SUBDIV = 32;  // higher subdivision to capture bump detail
+    const int SUBDIV = 40;
     float step = 2.0f * halfSize / SUBDIV;
     float uvStep = tileRepeat / SUBDIV;
 
@@ -344,14 +441,36 @@ void DrawTexturedGround(float halfSize, float tileRepeat) {
             float cx = (x0 + x1) * 0.5f, cz = (z0 + z1) * 0.5f;
             Vector3 n = FloorBumpNormal(cx, cz, halfSize, tileRepeat);
 
+            // Lighting: low ambient + strong directional for visible bump contrast
+            float ambient = 0.30f;
             float keyDot = Vector3DotProduct(n, LIGHT_KEY);
             if (keyDot < 0) keyDot = 0;
             float fillDot = Vector3DotProduct(n, LIGHT_FILL);
             if (fillDot < 0) fillDot = 0;
-            float lum = 0.55f + 0.30f * keyDot + 0.15f * fillDot;
-            unsigned char c = (unsigned char)(lum * 255.0f > 255 ? 255 : lum * 255.0f);
+            float lr = ambient + 0.45f * keyDot + 0.15f * fillDot;
+            float lg = lr, lb = lr;
 
-            rlColor4ub(c, c, c, 255);
+            // Skybox-derived irradiance: add colored light from dominant sky directions
+            if (skyProbesReady) {
+                for (int p = 0; p < NUM_SKY_PROBES; p++) {
+                    float d = Vector3DotProduct(n, skyProbes[p].dir);
+                    if (d < 0) d = 0;
+                    float w = d * 0.25f;  // weight per probe
+                    lr += skyProbes[p].r * w;
+                    lg += skyProbes[p].g * w;
+                    lb += skyProbes[p].b * w;
+                }
+            }
+
+            if (lr > 1.2f) lr = 1.2f;
+            if (lg > 1.2f) lg = 1.2f;
+            if (lb > 1.2f) lb = 1.2f;
+
+            unsigned char cr = (unsigned char)(lr * 212 > 255 ? 255 : lr * 212);
+            unsigned char cg = (unsigned char)(lg * 212 > 255 ? 255 : lg * 212);
+            unsigned char cb = (unsigned char)(lb * 212 > 255 ? 255 : lb * 212);
+
+            rlColor4ub(cr, cg, cb, 255);
 
             rlTexCoord2f(u0, v0); rlVertex3f(x0, y00, z0);
             rlTexCoord2f(u1, v0); rlVertex3f(x1, y10, z0);
