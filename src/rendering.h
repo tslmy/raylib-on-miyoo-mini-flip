@@ -18,6 +18,7 @@ void DrawSkybox(Vector3 camPos);
 void DrawTexturedGround(float halfSize, float tileRepeat);
 void DrawProjectedShadow(const ActiveDie& d, Matrix xform);
 void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos);
+void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos);
 void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos);
 void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos);
 void DrawFloorReflections(Vector3 camPos);
