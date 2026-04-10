@@ -512,124 +512,88 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
 // by TinyGL across each triangle.  This gives smooth color gradients
 // without the expense of per-pixel shading.
 
+// Pre-computed data that is constant across all vertices of one face.
+// Computing these once per face (instead of per vertex) saves 3 normalize
+// calls + 1 MatCap texture lookup per vertex — a big win on ARM.
+struct FaceLightCtx {
+    Vector3 halfKey;    // half-vector for key specular (light + view)
+    Vector3 halfFill;   // half-vector for fill specular
+    Color   matcap;     // matcap environment color at face center
+    float   fresnel;    // average Fresnel at face center (for env blend)
+};
+
+static FaceLightCtx PrecomputeFaceLight(Vector3 faceCenter, Vector3 faceNormal,
+                                        Vector3 camPos) {
+    FaceLightCtx ctx;
+    Vector3 viewDir = fast_normalize(Vector3Subtract(camPos, faceCenter));
+    ctx.halfKey  = fast_normalize(Vector3Add(LIGHT_KEY, viewDir));
+    ctx.halfFill = fast_normalize(Vector3Add(LIGHT_FILL, viewDir));
+    ctx.matcap   = SampleMatCap(faceNormal, viewDir);
+    float NdotV  = Vector3DotProduct(faceNormal, viewDir);
+    if (NdotV < 0) NdotV = 0;
+    ctx.fresnel  = 0.04f + 0.96f * pow5f(1.0f - NdotV);
+    return ctx;
+}
+
 // Compute the lit color for a single vertex.
-// Inputs: vertex position, surface normal, base color, camera position,
-//         dimFactor (0.6 for non-numbered faces, 1.0 for numbered).
-// Returns: final RGBA color including transparency.
-static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
+// Uses pre-computed face-level half-vectors and matcap to avoid redundant
+// normalize/sample calls at every vertex.
+static Color LitVertex(Vector3 normal, Color base, const FaceLightCtx& fc,
                        float dimFactor) {
-    // VIEW DIRECTION: vector from vertex toward the camera.
-    // Many lighting calculations need to know where the viewer is.
-    Vector3 viewDir = fast_normalize(Vector3Subtract(camPos, pos));
 
     // ── DIFFUSE LIGHTING ──
-    // How bright is this surface?  Combine SH environment (soft, colored,
-    // comes from all directions) with directional key/fill lights (sharp).
-    // The DOT PRODUCT of normal and light direction gives cos(angle):
-    //   = 1 when surface directly faces the light (bright)
-    //   = 0 when perpendicular (no contribution)
-    //   < 0 when facing away (clamped to 0 — no negative light)
+    // SH environment (soft ambient from skybox) + directional key/fill lights
     float shR, shG, shB;
     EvalSH(normal, &shR, &shG, &shB);
-    // SH provides ambient; directional lights add contrast
     float keyDot = Vector3DotProduct(normal, LIGHT_KEY);
     if (keyDot < 0) keyDot = 0;
     float fillDot = Vector3DotProduct(normal, LIGHT_FILL);
     if (fillDot < 0) fillDot = 0;
-    // Blend: SH ambient (normalized ~0.5 base) + directional contribution
     float diffR = shR * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
     float diffG = shG * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
     float diffB = shB * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
 
-    // ── SPECULAR HIGHLIGHT (Blinn-Phong, pow-16 from key light) ──
-    // The HALF VECTOR is halfway between light direction and view direction.
-    // When the surface normal aligns with it, light reflects straight into
-    // the camera — you see a bright "hot spot".  Raising to pow-16 makes
-    // it tight and shiny (higher power = smaller, sharper highlight).
-    // Specular: Blinn-Phong pow-16 (key light)
-    Vector3 halfVec = fast_normalize(Vector3Add(LIGHT_KEY, viewDir));
-    float specDot = Vector3DotProduct(normal, halfVec);
+    // ── SPECULAR (Blinn-Phong pow-16 from key light) ──
+    // Uses face-level half-vector (pre-computed in FaceLightCtx)
+    float specDot = Vector3DotProduct(normal, fc.halfKey);
     if (specDot < 0) specDot = 0;
     float spec = specDot;
     for (int p = 0; p < 4; p++) spec *= spec;
 
-    // ── CLEARCOAT (second specular layer with procedural scratches) ──
-    // Real dice have a glossy lacquer coating that adds an extra
-    // highlight layer.  We perturb the normal slightly per-vertex using
-    // a hash of the position — this fakes micro-scratches on the surface
-    // that make the clearcoat highlight shimmer and break up.
-    Vector3 ccN = normal;
-    {
-        // Procedural noise: hash vertex position to get pseudo-random
-        // scratch direction.  Different constants produce different patterns.
-        unsigned int s2 = (unsigned int)(pos.x * 5000) * 48271u
-                        + (unsigned int)(pos.z * 5000) * 16807u
-                        + (unsigned int)(pos.y * 3000) * 65537u;
-        float sx = ((s2 & 0xFF) / 255.0f - 0.5f) * 0.15f;
-        float sz = (((s2 >> 8) & 0xFF) / 255.0f - 0.5f) * 0.05f;
-        ccN.x += sx; ccN.z += sz;
-        float len2 = ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z;
-        if (len2 > 1e-6f) {
-            float inv = fast_rsqrtf(len2);
-            ccN.x *= inv; ccN.y *= inv; ccN.z *= inv;
-        }
-    }
-    float ccSpecDot = Vector3DotProduct(ccN, halfVec);
-    if (ccSpecDot < 0) ccSpecDot = 0;
-    float ccSpec = ccSpecDot;
+    // ── CLEARCOAT (pow-32, same half-vector, no procedural perturbation) ──
+    // The scratch texture overlay provides visual micro-detail; we don't need
+    // expensive per-vertex noise here.
+    float ccSpec = specDot;  // reuse key specular dot
     for (int p = 0; p < 5; p++) ccSpec *= ccSpec;
     float clearcoat = 0.5f * ccSpec;
 
-    // ── FILL SPECULAR (softer, from the fill light, pow-4) ──
-    // A subtle secondary highlight from the fill light.  Lower power
-    // = broader, softer spot.  This prevents the fill side from looking
-    // completely flat.
-    Vector3 halfFill = fast_normalize(Vector3Add(LIGHT_FILL, viewDir));
-    float fillSpec = Vector3DotProduct(normal, halfFill);
+    // ── FILL SPECULAR (pow-4, from fill light) ──
+    float fillSpec = Vector3DotProduct(normal, fc.halfFill);
     if (fillSpec < 0) fillSpec = 0;
     fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
 
-    // ── FRESNEL RIM GLOW ──
-    // The Fresnel effect: surfaces viewed at a grazing angle (edges)
-    // become more reflective than surfaces viewed head-on.  This is why
-    // a glass looks transparent when you look through it, but mirror-like
-    // when you look at its edge.
-    //
-    // Schlick's approximation: F = F0 + (1-F0) × (1 - cos(θ))^5
-    //   F0 = 0.04 (glass reflectance at normal incidence)
-    //   θ  = angle between normal and view direction
-    float NdotV = Vector3DotProduct(normal, viewDir);
-    if (NdotV < 0) NdotV = 0;
-    float fresnel = 0.04f + 0.96f * pow5f(1.0f - NdotV);
-    float rim = fresnel * 0.70f;  // stronger rim for glass-like IOR 1.5
+    // ── FRESNEL RIM GLOW (Schlick approx, F0=0.04 for glass IOR ~1.5) ──
+    // Use face-level fresnel for consistency (varies slowly across a face)
+    float rim = fc.fresnel * 0.70f;
 
-    // ── COMPOSE: add up all lighting contributions ──
-    // Final color = base_color × diffuse × dim + white × specular + white × rim
-    // (specular and rim are additive white because they're light reflections,
-    // not colored by the surface material)
+    // ── COMPOSE all lighting contributions ──
     float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
     float sr = base.r * diffR * dimFactor + 255.0f * totalSpec + 255.0f * rim;
     float sg = base.g * diffG * dimFactor + 255.0f * totalSpec + 255.0f * rim;
     float sb = base.b * diffB * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
     // ── MATCAP ENVIRONMENT REFLECTION ──
-    // Blend in the matcap color based on Fresnel — edges get more
-    // reflection (physically correct for glass/glossy materials).
-    Color mc = SampleMatCap(normal, viewDir);
-    float envR = mc.r, envG = mc.g, envB = mc.b;
-    float envMix = 0.12f + fresnel * 0.45f;  // 12% base + strong Fresnel-driven edge reflections
-    sr = sr * (1.0f - envMix) + envR * envMix;  // linear interpolation
+    // Blend in face-level matcap color based on Fresnel
+    float envR = fc.matcap.r, envG = fc.matcap.g, envB = fc.matcap.b;
+    float envMix = 0.12f + fc.fresnel * 0.45f;
+    sr = sr * (1.0f - envMix) + envR * envMix;
     sg = sg * (1.0f - envMix) + envG * envMix;
     sb = sb * (1.0f - envMix) + envB * envMix;
 
     if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
-    // ── ALPHA (TRANSPARENCY) ──
-    // Glass-like IOR behavior: center of face is mostly transparent
-    // (low DICE_ALPHA), but edges become nearly opaque due to Fresnel.
-    // This mimics how real glass is see-through head-on but mirror-like
-    // at grazing angles (total internal reflection).
-    unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.85f);
+    // ── ALPHA (glass-like IOR: edges more opaque via Fresnel) ──
+    unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fc.fresnel * 0.85f);
 
     return {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
 }
@@ -655,10 +619,6 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Color base = d.baseColor;
 
     // Pre-compute per-vertex averaged normals for smooth shading.
-    // For each face, compute its face normal (cross product of two edges),
-    // then add it to every vertex that belongs to that face.
-    // After all faces, normalize each vertex normal to unit length.
-    // This "averages" the surrounding face normals at shared vertices.
     Vector3 vertNormals[MAX_DIE_VERTS] = {};
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
@@ -673,36 +633,32 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     for (int i = 0; i < d.numVerts; i++)
         vertNormals[i] = fast_normalize(vertNormals[i]);
 
-    // Pre-compute per-vertex lit colors
-    Color vertColors[MAX_DIE_VERTS];
-    for (int i = 0; i < d.numVerts; i++)
-        vertColors[i] = LitVertex(wv[i], vertNormals[i], base, camPos, 1.0f);
-
-    // GL_SMOOTH tells TinyGL to interpolate colors between vertices
-    // (Gouraud shading).  Without this, every pixel in a triangle would
-    // have the same color (flat shading).
     glShadeModel(GL_SMOOTH);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-    // Draw all faces as triangles.  Polygons with >3 vertices are
-    // "fan-triangulated": vertex 0 connects to every consecutive pair.
-    //   e.g., quad {0,1,2,3} → triangles {0,1,2} and {0,2,3}
+    // Draw faces with per-face light context (half-vectors, matcap, fresnel
+    // computed once per face, then reused for all vertices in that face).
     rlBegin(RL_TRIANGLES);
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
 
+        // Face center for face-level light pre-computation
+        Vector3 faceCenter = {0, 0, 0};
+        for (int j = 0; j < face.count; j++)
+            faceCenter = Vector3Add(faceCenter, wv[face.idx[j]]);
+        faceCenter = Vector3Scale(faceCenter, 1.0f / face.count);
+
+        Vector3 fn = FaceNormal(wv, face);
+        FaceLightCtx fc = PrecomputeFaceLight(faceCenter, fn, camPos);
+
         for (int j = 1; j < face.count - 1; j++) {
             int i0 = face.idx[0], i1 = face.idx[j], i2 = face.idx[j+1];
 
-            // Dim non-value faces
-            Color c0 = vertColors[i0], c1 = vertColors[i1], c2 = vertColors[i2];
-            if (dimFactor < 1.0f) {
-                c0.r *= dimFactor; c0.g *= dimFactor; c0.b *= dimFactor;
-                c1.r *= dimFactor; c1.g *= dimFactor; c1.b *= dimFactor;
-                c2.r *= dimFactor; c2.g *= dimFactor; c2.b *= dimFactor;
-            }
+            Color c0 = LitVertex(vertNormals[i0], base, fc, dimFactor);
+            Color c1 = LitVertex(vertNormals[i1], base, fc, dimFactor);
+            Color c2 = LitVertex(vertNormals[i2], base, fc, dimFactor);
 
             rlColor4ub(c0.r, c0.g, c0.b, c0.a);
             rlVertex3f(wv[i0].x, wv[i0].y, wv[i0].z);
@@ -714,7 +670,7 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     }
     rlEnd();
 
-    glShadeModel(GL_FLAT);  // restore default for subsequent drawing
+    glShadeModel(GL_FLAT);
 }
 
 // Draw subtle white wireframe edges on the die for shape definition.
@@ -843,40 +799,36 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 //   becomes counter-clockwise), so we reverse the backface culling
 //   check to compensate.
 
-void DrawFloorReflections(Vector3 camPos) {
+void DrawFloorReflections(Vector3 camPos, const Matrix* xforms) {
     if (numDice == 0) return;
 
-    // Y-flip matrix to mirror dice below the floor plane (y=0)
     Matrix flipY = MatrixIdentity();
     flipY.m5 = -1.0f;
 
-    // Mirror the camera position for correct face-culling perception
     Vector3 mirrorCam = camPos;
     mirrorCam.y = -mirrorCam.y;
 
-    // Disable depth test so reflections draw on top of the floor
     rlDisableDepthTest();
     rlDisableDepthMask();
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
     glShadeModel(GL_FLAT);
 
-    // Sort back-to-front relative to mirrored camera
+    // Sort back-to-front relative to mirrored camera (using cached xforms)
     int order[MAX_ACTIVE_DICE];
     for (int i = 0; i < numDice; i++) order[i] = i;
     for (int i = 0; i < numDice - 1; i++)
         for (int j = i + 1; j < numDice; j++) {
-            Matrix a = GetDieTransform(dice[order[i]]);
-            Matrix b = GetDieTransform(dice[order[j]]);
-            float da = Vector3LengthSqr(Vector3Subtract({a.m12,a.m13,a.m14}, mirrorCam));
-            float db = Vector3LengthSqr(Vector3Subtract({b.m12,b.m13,b.m14}, mirrorCam));
+            float da = Vector3LengthSqr(Vector3Subtract(
+                {xforms[order[i]].m12, xforms[order[i]].m13, xforms[order[i]].m14}, mirrorCam));
+            float db = Vector3LengthSqr(Vector3Subtract(
+                {xforms[order[j]].m12, xforms[order[j]].m13, xforms[order[j]].m14}, mirrorCam));
             if (da < db) { int t = order[i]; order[i] = order[j]; order[j] = t; }
         }
 
     for (int i = 0; i < numDice; i++) {
         int di = order[i];
-        Matrix xf = GetDieTransform(dice[di]);
-        Matrix reflXf = MatrixMultiply(xf, flipY);
+        Matrix reflXf = MatrixMultiply(xforms[di], flipY);
 
         const DiceDef& def = DICE_DEFS[dice[di].typeIdx];
         int nf = dice[di].numFaces;
@@ -906,7 +858,7 @@ void DrawFloorReflections(Vector3 camPos) {
             unsigned char cb = (unsigned char)(pastel.b * lum > 255 ? 255 : pastel.b * lum);
 
             // Fade reflection based on distance from floor — closer dice = stronger reflection
-            float dieY = xf.m13;  // original die Y position
+            float dieY = xforms[di].m13;  // original die Y position
             float fade = 1.0f / (1.0f + dieY * 1.5f);
             unsigned char alpha = (unsigned char)(120 * fade);  // visible glossy reflection
 
@@ -1509,6 +1461,11 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
 
+    // Batch all number decals in a single rlBegin/rlEnd + texture bind
+    rlSetTexture(numberAtlas.id);
+    rlBegin(RL_TRIANGLES);
+    rlColor4ub(255, 255, 255, 255);
+
     for (int f = 0; f < d.numFaces; f++) {
         if (d.faces[f].value < 0) continue;
         const Face& face = d.faces[f];
@@ -1545,18 +1502,16 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
         float u0, v0, u1, v1;
         GetNumberUV(face.value, &u0, &v0, &u1, &v1);
 
-        rlSetTexture(numberAtlas.id);
-        rlBegin(RL_TRIANGLES);
-            rlColor4ub(255, 255, 255, 255);
-            rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(u1, v0); rlVertex3f(q1.x, q1.y, q1.z);
-            rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(u0, v1); rlVertex3f(q3.x, q3.y, q3.z);
-        rlEnd();
-        rlSetTexture(0);
+        rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
+        rlTexCoord2f(u1, v0); rlVertex3f(q1.x, q1.y, q1.z);
+        rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
+        rlTexCoord2f(u0, v0); rlVertex3f(q0.x, q0.y, q0.z);
+        rlTexCoord2f(u1, v1); rlVertex3f(q2.x, q2.y, q2.z);
+        rlTexCoord2f(u0, v1); rlVertex3f(q3.x, q3.y, q3.z);
     }
+
+    rlEnd();
+    rlSetTexture(0);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1595,30 +1550,29 @@ static void DrawFaceOverlay(const ActiveDie& d, const Matrix& xform,
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
 
+    // Single texture bind for all faces (was per-face before)
+    rlSetTexture(p.tex.id);
+    rlBegin(RL_TRIANGLES);
+
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
 
-        // Face centroid (average of all vertices)
         Vector3 center = {0, 0, 0};
         for (int i = 0; i < face.count; i++)
             center = Vector3Add(center, wv[face.idx[i]]);
         center = Vector3Scale(center, 1.0f / face.count);
 
-        // Backface cull: skip faces pointing away from camera
         Vector3 n = FaceNormal(wv, face);
         Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
         if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
 
-        // Tangent frame for UV projection (from first edge + normal)
         Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
         Vector3 t1 = fast_normalize(edge);
         Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
 
-        // Per-face UV offset: hash the face index for variety
         float uOff = (float)(f * p.hashSeed1 % 8) / 8.0f;
         float vOff = (float)(f * p.hashSeed2 % 8) / 8.0f;
 
-        // Per-face vertex color
         unsigned char r = 255, g = 255, b = 255, a = 255;
         if (p.lightModulate) {
             float lightDot = Vector3DotProduct(n, LIGHT_KEY);
@@ -1627,10 +1581,8 @@ static void DrawFaceOverlay(const ActiveDie& d, const Matrix& xform,
             r = g = b = intensity;
         }
 
-        // Offset above face surface to prevent z-fighting
         Vector3 off = Vector3Scale(n, p.normalOffset);
 
-        // Project each vertex onto the tangent frame for UVs
         float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
         Vector3 vertPos[MAX_FACE_VERTS];
         for (int i = 0; i < face.count; i++) {
@@ -1641,9 +1593,6 @@ static void DrawFaceOverlay(const ActiveDie& d, const Matrix& xform,
             vertV[i] = Vector3DotProduct(rel, t2) * OVERLAY_UV_SCALE + vOff;
         }
 
-        // Fan-triangulate from vertex 0 (same winding as DrawDieFacesLit)
-        rlSetTexture(p.tex.id);
-        rlBegin(RL_TRIANGLES);
         rlColor4ub(r, g, b, a);
         for (int j = 1; j < face.count - 1; j++) {
             rlTexCoord2f(vertU[0], vertV[0]);
@@ -1653,9 +1602,10 @@ static void DrawFaceOverlay(const ActiveDie& d, const Matrix& xform,
             rlTexCoord2f(vertU[j+1], vertV[j+1]);
             rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
         }
-        rlEnd();
-        rlSetTexture(0);
     }
+
+    rlEnd();
+    rlSetTexture(0);
 }
 
 // ═══════════════════════════════════════════════════════════════════

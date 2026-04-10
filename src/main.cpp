@@ -394,21 +394,20 @@ int main(int argc, char **argv) {
 
         DrawSkybox(camera.position);
         DrawTexturedGround(10.0f, 4.0f);
-        DrawFloorReflections(camera.position);
 
-        // Enable blend for transparent geometry (dice, shadows, reflections).
-        // GL_SRC_ALPHA means: new_color × alpha + old_color × (1 - alpha)
-        rlEnableColorBlend();
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glShadeModel(GL_FLAT);  // shadows/decals use flat; DrawDieFacesLit switches to smooth
-
-        // Cache per-die transforms (used for shadows, sorting, and rendering)
+        // Cache per-die transforms once per frame (used everywhere below)
         Matrix xforms[MAX_ACTIVE_DICE];
         for (int i = 0; i < numDice; i++)
             xforms[i] = GetDieTransform(dice[i]);
 
+        DrawFloorReflections(camera.position, xforms);
+
+        // Enable blend for transparent geometry (dice, shadows, reflections).
+        rlEnableColorBlend();
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glShadeModel(GL_FLAT);
+
         // ── SHADOWS ──
-        // Projected outline shadows on the floor for each die.
         for (int i = 0; i < numDice; i++)
             DrawProjectedShadow(dice[i], xforms[i]);
 

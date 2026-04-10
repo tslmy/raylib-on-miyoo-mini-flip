@@ -49,7 +49,7 @@ void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,        // Per-p
 void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos);     // Subtle wireframe edges
 void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos);     // Geometry bloom halos
 void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos); // Face numbers
-void DrawFloorReflections(Vector3 camPos);                          // Y-flipped mirror reflections
+void DrawFloorReflections(Vector3 camPos, const Matrix* xforms);     // Y-flipped mirror reflections
 
 // ── 2D UI overlay ──
 void DrawHotbar();                                                  // Dice selection bar at bottom
