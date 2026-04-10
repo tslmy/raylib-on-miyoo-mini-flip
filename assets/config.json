@@ -1,6 +1,6 @@
 {
-  "label": "Raylib Cube with physics",
+  "label": "Dice roller",
   "icon": "icon.png",
   "launch": "launch.sh",
-  "description": "A cube tossed mid-air bounces on the floor."
+  "description": "Physically roll some glass dices."
 }
