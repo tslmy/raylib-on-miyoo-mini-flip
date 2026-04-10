@@ -262,8 +262,91 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Pre-baked lit floor: per-pixel bump+specular+IBL baked at init
+// Planar floor reflections
 // ═══════════════════════════════════════════════════════════════════
+
+void DrawFloorReflections(Vector3 camPos) {
+    if (numDice == 0) return;
+
+    // Y-flip matrix to mirror dice below the floor plane (y=0)
+    Matrix flipY = MatrixIdentity();
+    flipY.m5 = -1.0f;
+
+    // Mirror the camera position for correct face-culling perception
+    Vector3 mirrorCam = camPos;
+    mirrorCam.y = -mirrorCam.y;
+
+    // Disable depth test so reflections draw on top of the floor
+    rlDisableDepthTest();
+    rlDisableDepthMask();
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glShadeModel(GL_FLAT);
+
+    // Sort back-to-front relative to mirrored camera
+    int order[MAX_ACTIVE_DICE];
+    for (int i = 0; i < numDice; i++) order[i] = i;
+    for (int i = 0; i < numDice - 1; i++)
+        for (int j = i + 1; j < numDice; j++) {
+            Matrix a = GetDieTransform(dice[order[i]]);
+            Matrix b = GetDieTransform(dice[order[j]]);
+            float da = Vector3LengthSqr(Vector3Subtract({a.m12,a.m13,a.m14}, mirrorCam));
+            float db = Vector3LengthSqr(Vector3Subtract({b.m12,b.m13,b.m14}, mirrorCam));
+            if (da < db) { int t = order[i]; order[i] = order[j]; order[j] = t; }
+        }
+
+    for (int i = 0; i < numDice; i++) {
+        int di = order[i];
+        Matrix xf = GetDieTransform(dice[di]);
+        Matrix reflXf = MatrixMultiply(xf, flipY);
+
+        const DiceDef& def = DICE_DEFS[dice[di].typeIdx];
+        int nf = dice[di].numFaces;
+
+        // Draw reflected die faces with low alpha for subtle reflection
+        rlBegin(RL_TRIANGLES);
+        for (int f = 0; f < nf; f++) {
+            int nv = dice[di].faces[f].count;
+            Vector3 wv[4];
+            for (int v = 0; v < nv; v++) {
+                wv[v] = Vector3Transform(dice[di].verts[dice[di].faces[f].idx[v]], reflXf);
+            }
+            // Face normal in reflected space
+            Vector3 fn = Vector3Normalize(Vector3CrossProduct(
+                Vector3Subtract(wv[1], wv[0]), Vector3Subtract(wv[2], wv[0])));
+            Vector3 toEye = Vector3Normalize(Vector3Subtract(mirrorCam, wv[0]));
+            if (Vector3DotProduct(fn, toEye) > 0) continue;  // flipped cull (Y-flip inverts winding)
+
+            // Use the die's pastel color, heavily faded
+            Color pastel = PASTEL2[dice[di].typeIdx % 8];
+            // Simple lighting on reflected die
+            float keyDot = Vector3DotProduct(fn, LIGHT_KEY);
+            if (keyDot < 0) keyDot = 0;
+            float lum = 0.4f + 0.4f * keyDot;
+            unsigned char cr = (unsigned char)(pastel.r * lum > 255 ? 255 : pastel.r * lum);
+            unsigned char cg = (unsigned char)(pastel.g * lum > 255 ? 255 : pastel.g * lum);
+            unsigned char cb = (unsigned char)(pastel.b * lum > 255 ? 255 : pastel.b * lum);
+
+            // Fade reflection based on distance from floor — closer dice = stronger reflection
+            float dieY = xf.m13;  // original die Y position
+            float fade = 1.0f / (1.0f + dieY * 2.0f);
+            unsigned char alpha = (unsigned char)(70 * fade);  // subtle glossy reflection
+
+            rlColor4ub(cr, cg, cb, alpha);
+            for (int j = 1; j < nv - 1; j++) {
+                rlVertex3f(wv[0].x, wv[0].y, wv[0].z);
+                rlVertex3f(wv[j].x, wv[j].y, wv[j].z);
+                rlVertex3f(wv[j+1].x, wv[j+1].y, wv[j+1].z);
+            }
+        }
+        rlEnd();
+    }
+
+    rlEnableDepthTest();
+    rlEnableDepthMask();
+    glDisable(GL_BLEND);
+    glShadeModel(GL_SMOOTH);
+}
 
 static Texture2D bakedFloorTex;  // the single pre-lit texture used at runtime
 
