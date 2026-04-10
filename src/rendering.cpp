@@ -1510,6 +1510,105 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Face overlay system (shared by scratch + dirt overlays)
+// ═══════════════════════════════════════════════════════════════════
+//
+// Both scratch and dirt overlays share the same drawing logic:
+//   1. Transform vertices to world space
+//   2. For each front-facing face: compute center, normal, tangent frame
+//   3. Project per-vertex UVs onto tangent frame
+//   4. Fan-triangulate and draw textured triangles
+//
+// The only differences are:
+//   - Texture and blend mode (additive for scratches, alpha for dirt)
+//   - Normal offset height (scratches on top of dirt)
+//   - UV hash seeds (so patterns don't align)
+//   - Per-face color: scratches modulate by lighting, dirt is white
+//
+// This helper avoids duplicating ~60 lines between the two overlays.
+// ═══════════════════════════════════════════════════════════════════
+
+struct FaceOverlayParams {
+    Texture2D tex;
+    float normalOffset;       // distance above face surface
+    int hashSeed1, hashSeed2; // per-face UV offset variety
+    bool lightModulate;       // if true, darken faces away from key light
+};
+
+// UV scale: how many world units per full texture tile.
+// Consistent across all overlays so scratch/dirt textures tile at the same density.
+static const float OVERLAY_UV_SCALE = 1.0f / (DIE_RADIUS * 1.4f);
+
+static void DrawFaceOverlay(const ActiveDie& d, const Matrix& xform,
+                            Vector3 camPos, const FaceOverlayParams& p) {
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+
+        // Face centroid (average of all vertices)
+        Vector3 center = {0, 0, 0};
+        for (int i = 0; i < face.count; i++)
+            center = Vector3Add(center, wv[face.idx[i]]);
+        center = Vector3Scale(center, 1.0f / face.count);
+
+        // Backface cull: skip faces pointing away from camera
+        Vector3 n = FaceNormal(wv, face);
+        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
+        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
+
+        // Tangent frame for UV projection (from first edge + normal)
+        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
+        Vector3 t1 = fast_normalize(edge);
+        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
+
+        // Per-face UV offset: hash the face index for variety
+        float uOff = (float)(f * p.hashSeed1 % 8) / 8.0f;
+        float vOff = (float)(f * p.hashSeed2 % 8) / 8.0f;
+
+        // Per-face vertex color
+        unsigned char r = 255, g = 255, b = 255, a = 255;
+        if (p.lightModulate) {
+            float lightDot = Vector3DotProduct(n, LIGHT_KEY);
+            if (lightDot < 0) lightDot = 0;
+            unsigned char intensity = (unsigned char)(40 + 160 * lightDot);
+            r = g = b = intensity;
+        }
+
+        // Offset above face surface to prevent z-fighting
+        Vector3 off = Vector3Scale(n, p.normalOffset);
+
+        // Project each vertex onto the tangent frame for UVs
+        float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
+        Vector3 vertPos[MAX_FACE_VERTS];
+        for (int i = 0; i < face.count; i++) {
+            Vector3 pos = Vector3Add(wv[face.idx[i]], off);
+            vertPos[i] = pos;
+            Vector3 rel = Vector3Subtract(pos, center);
+            vertU[i] = Vector3DotProduct(rel, t1) * OVERLAY_UV_SCALE + uOff;
+            vertV[i] = Vector3DotProduct(rel, t2) * OVERLAY_UV_SCALE + vOff;
+        }
+
+        // Fan-triangulate from vertex 0 (same winding as DrawDieFacesLit)
+        rlSetTexture(p.tex.id);
+        rlBegin(RL_TRIANGLES);
+        rlColor4ub(r, g, b, a);
+        for (int j = 1; j < face.count - 1; j++) {
+            rlTexCoord2f(vertU[0], vertV[0]);
+            rlVertex3f(vertPos[0].x, vertPos[0].y, vertPos[0].z);
+            rlTexCoord2f(vertU[j], vertV[j]);
+            rlVertex3f(vertPos[j].x, vertPos[j].y, vertPos[j].z);
+            rlTexCoord2f(vertU[j+1], vertV[j+1]);
+            rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
+        }
+        rlEnd();
+        rlSetTexture(0);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Scratch overlay (per-pixel surface detail via texture mapping)
 // ═══════════════════════════════════════════════════════════════════
 //
@@ -1523,7 +1622,8 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 //   Load a "scratch normal map" (from the THREE.js Scratched_gold
 //   texture), convert it at startup into a "scratch highlight" texture
 //   (white where scratches are, transparent elsewhere), and draw it as
-//   a textured quad overlay per face — just like number decals.
+//   a textured overlay per face — just like number decals but using
+//   the shared DrawFaceOverlay() helper.
 //
 //   TinyGL handles per-pixel texture sampling, so this gives us
 //   per-pixel scratch detail at minimal extra CPU cost.  We use
@@ -1557,19 +1657,16 @@ void InitScratchTexture() {
     Image img = LoadImage("scratches.png");
     if (img.data == NULL) return;
 
-    // Ensure RGBA format for per-pixel manipulation
     ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
     unsigned char* px = (unsigned char*)img.data;
     int count = img.width * img.height;
 
     for (int i = 0; i < count; i++) {
-        // Extract tangent-space deviation from "flat" (128, 128)
-        float dx = px[i*4 + 0] / 255.0f - 0.5f;  // X deviation
-        float dy = px[i*4 + 1] / 255.0f - 0.5f;  // Y deviation
+        float dx = px[i*4 + 0] / 255.0f - 0.5f;
+        float dy = px[i*4 + 1] / 255.0f - 0.5f;
         float strength = sqrtf(dx*dx + dy*dy) * 4.0f;
         if (strength > 1.0f) strength = 1.0f;
 
-        // Output: white pixel, alpha = scratch visibility
         px[i*4 + 0] = 255;
         px[i*4 + 1] = 255;
         px[i*4 + 2] = 255;
@@ -1583,86 +1680,15 @@ void InitScratchTexture() {
 }
 
 // Draw scratch highlights on all visible faces of a die.
-//
-// Uses actual face geometry (triangle fan from center) instead of a
-// bounding quad.  This ensures the overlay exactly covers each face —
-// no overflow on triangles (D4/D8/D20), no gaps on larger faces.
-//
-// Per-vertex UVs are computed by projecting each vertex onto the face's
-// tangent frame, then scaling so the texture tiles across the face.
-// A per-face UV offset provides variety (each face shows a different
-// region of the scratch pattern).
+// Uses additive blending so scratches brighten the surface.
+// Light-modulated: scratches on lit faces appear brighter.
 void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,
                            Vector3 camPos) {
     if (!scratchLoaded) return;
-
-    Vector3 wv[MAX_DIE_VERTS];
-    for (int i = 0; i < d.numVerts; i++)
-        wv[i] = Vector3Transform(d.verts[i], xform);
-
-    // Additive blending: scratches brighten the surface
     rlSetBlendMode(RL_BLEND_ADDITIVE);
-
-    for (int f = 0; f < d.numFaces; f++) {
-        const Face& face = d.faces[f];
-
-        Vector3 center = {0, 0, 0};
-        for (int i = 0; i < face.count; i++)
-            center = Vector3Add(center, wv[face.idx[i]]);
-        center = Vector3Scale(center, 1.0f / face.count);
-
-        Vector3 n = FaceNormal(wv, face);
-        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
-        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
-
-        // Tangent frame for UV projection
-        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
-        Vector3 t1 = fast_normalize(edge);
-        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
-
-        // UV scale: how many world units per full texture tile.
-        // Use the die radius so scratches are consistently sized across dice types.
-        float uvScale = 1.0f / (DIE_RADIUS * 1.4f);
-
-        // Per-face UV offset for variety
-        float uOff = (float)(f * 37 % 8) / 8.0f;
-        float vOff = (float)(f * 53 % 8) / 8.0f;
-
-        // Light modulation: brighter scratches on lit faces
-        float lightDot = Vector3DotProduct(n, LIGHT_KEY);
-        if (lightDot < 0) lightDot = 0;
-        unsigned char intensity = (unsigned char)(40 + 160 * lightDot);
-
-        // Offset slightly above face surface
-        Vector3 off = Vector3Scale(n, 0.003f);
-
-        // Compute per-vertex UVs by projecting onto tangent frame
-        float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
-        Vector3 vertPos[MAX_FACE_VERTS];
-        for (int i = 0; i < face.count; i++) {
-            Vector3 p = Vector3Add(wv[face.idx[i]], off);
-            vertPos[i] = p;
-            Vector3 rel = Vector3Subtract(p, center);
-            vertU[i] = Vector3DotProduct(rel, t1) * uvScale + uOff;
-            vertV[i] = Vector3DotProduct(rel, t2) * uvScale + vOff;
-        }
-
-        // Fan-triangulate from vertex 0 (same as DrawDieFacesLit)
-        rlSetTexture(scratchTex.id);
-        rlBegin(RL_TRIANGLES);
-        rlColor4ub(intensity, intensity, intensity, 255);
-        for (int j = 1; j < face.count - 1; j++) {
-            rlTexCoord2f(vertU[0], vertV[0]);
-            rlVertex3f(vertPos[0].x, vertPos[0].y, vertPos[0].z);
-            rlTexCoord2f(vertU[j], vertV[j]);
-            rlVertex3f(vertPos[j].x, vertPos[j].y, vertPos[j].z);
-            rlTexCoord2f(vertU[j+1], vertV[j+1]);
-            rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
-        }
-        rlEnd();
-        rlSetTexture(0);
-    }
-
+    DrawFaceOverlay(d, xform, camPos, {
+        scratchTex, 0.003f, 37, 53, true
+    });
     rlSetBlendMode(RL_BLEND_ALPHA);
 }
 
@@ -1700,40 +1726,26 @@ void InitDirtTexture() {
 
     // Fixed light direction for baking bump highlights/shadows.
     // Points from upper-right — similar to LIGHT_KEY but in tangent space.
-    // Tangent-space Z = face normal direction.
-    float lx = 0.4f, ly = 0.3f, lz = 0.86f;  // roughly normalized
-
-    // NdotL for a perfectly flat surface (normal = 0,0,1)
-    float flatDot = lz;
+    float lx = 0.4f, ly = 0.3f, lz = 0.86f;
+    float flatDot = lz;  // NdotL for a perfectly flat surface
 
     for (int i = 0; i < count; i++) {
-        // Decode tangent-space normal from RGB
         float nx = px[i*4 + 0] / 255.0f * 2.0f - 1.0f;
         float ny = px[i*4 + 1] / 255.0f * 2.0f - 1.0f;
         float nz = px[i*4 + 2] / 255.0f;
-        // Quick normalize
         float invLen = fast_rsqrtf(nx*nx + ny*ny + nz*nz + 1e-6f);
         nx *= invLen; ny *= invLen; nz *= invLen;
 
-        // How much does this pixel's bump deviate from flat lighting?
         float NdotL = nx * lx + ny * ly + nz * lz;
-        float delta = (NdotL - flatDot) * 5.0f;  // amplify for visibility
+        float delta = (NdotL - flatDot) * 5.0f;
 
         if (delta > 0) {
-            // Bump faces light → white highlight
-            float a = delta;
-            if (a > 1.0f) a = 1.0f;
-            px[i*4 + 0] = 255;
-            px[i*4 + 1] = 255;
-            px[i*4 + 2] = 255;
+            float a = delta; if (a > 1.0f) a = 1.0f;
+            px[i*4+0] = 255; px[i*4+1] = 255; px[i*4+2] = 255;
             px[i*4 + 3] = (unsigned char)(a * 180);
         } else {
-            // Crevice → black shadow
-            float a = -delta;
-            if (a > 1.0f) a = 1.0f;
-            px[i*4 + 0] = 0;
-            px[i*4 + 1] = 0;
-            px[i*4 + 2] = 0;
+            float a = -delta; if (a > 1.0f) a = 1.0f;
+            px[i*4+0] = 0; px[i*4+1] = 0; px[i*4+2] = 0;
             px[i*4 + 3] = (unsigned char)(a * 130);
         }
     }
@@ -1745,67 +1757,13 @@ void InitDirtTexture() {
 }
 
 // Draw dirt bump highlights/shadows on all visible faces.
-// Uses actual face geometry (triangle fan) for exact coverage.
-// Standard alpha blending: white pixels brighten (bumps catching
-// light), black pixels darken (crevices in shadow).
+// Uses standard alpha blending: white brightens, black darkens.
 void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,
                         Vector3 camPos) {
     if (!dirtLoaded) return;
-
-    Vector3 wv[MAX_DIE_VERTS];
-    for (int i = 0; i < d.numVerts; i++)
-        wv[i] = Vector3Transform(d.verts[i], xform);
-
-    for (int f = 0; f < d.numFaces; f++) {
-        const Face& face = d.faces[f];
-
-        Vector3 center = {0, 0, 0};
-        for (int i = 0; i < face.count; i++)
-            center = Vector3Add(center, wv[face.idx[i]]);
-        center = Vector3Scale(center, 1.0f / face.count);
-
-        Vector3 n = FaceNormal(wv, face);
-        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
-        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
-
-        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
-        Vector3 t1 = fast_normalize(edge);
-        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
-
-        // UV scale consistent with scratch overlay
-        float uvScale = 1.0f / (DIE_RADIUS * 1.4f);
-
-        // Different UV offset pattern than scratches for visual variety
-        float uOff = (float)(f * 61 % 8) / 8.0f;
-        float vOff = (float)(f * 43 % 8) / 8.0f;
-
-        // Offset between face surface and scratch overlay
-        Vector3 off = Vector3Scale(n, 0.002f);
-
-        float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
-        Vector3 vertPos[MAX_FACE_VERTS];
-        for (int i = 0; i < face.count; i++) {
-            Vector3 p = Vector3Add(wv[face.idx[i]], off);
-            vertPos[i] = p;
-            Vector3 rel = Vector3Subtract(p, center);
-            vertU[i] = Vector3DotProduct(rel, t1) * uvScale + uOff;
-            vertV[i] = Vector3DotProduct(rel, t2) * uvScale + vOff;
-        }
-
-        rlSetTexture(dirtTex.id);
-        rlBegin(RL_TRIANGLES);
-        rlColor4ub(255, 255, 255, 255);
-        for (int j = 1; j < face.count - 1; j++) {
-            rlTexCoord2f(vertU[0], vertV[0]);
-            rlVertex3f(vertPos[0].x, vertPos[0].y, vertPos[0].z);
-            rlTexCoord2f(vertU[j], vertV[j]);
-            rlVertex3f(vertPos[j].x, vertPos[j].y, vertPos[j].z);
-            rlTexCoord2f(vertU[j+1], vertV[j+1]);
-            rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
-        }
-        rlEnd();
-        rlSetTexture(0);
-    }
+    DrawFaceOverlay(d, xform, camPos, {
+        dirtTex, 0.002f, 61, 43, false
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════
