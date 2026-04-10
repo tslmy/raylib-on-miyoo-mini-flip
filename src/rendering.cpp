@@ -1435,6 +1435,169 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Scratch overlay (per-pixel surface detail via texture mapping)
+// ═══════════════════════════════════════════════════════════════════
+//
+// PROBLEM:
+//   Our Gouraud shading computes lighting per-VERTEX, so fine surface
+//   details like scratches would need thousands of extra vertices to
+//   look right.  With only ~20 vertices per die, per-vertex scratches
+//   (like our procedural clearcoat hash) look very coarse.
+//
+// SOLUTION:
+//   Load a "scratch normal map" (from the THREE.js Scratched_gold
+//   texture), convert it at startup into a "scratch highlight" texture
+//   (white where scratches are, transparent elsewhere), and draw it as
+//   a textured quad overlay per face — just like number decals.
+//
+//   TinyGL handles per-pixel texture sampling, so this gives us
+//   per-pixel scratch detail at minimal extra CPU cost.  We use
+//   ADDITIVE blending (GL_SRC_ALPHA, GL_ONE) so the scratches
+//   brighten the underlying surface, simulating specular micro-detail.
+//
+// WHY NOT TEXTURE THE FACES DIRECTLY?
+//   DrawDieFacesLit uses untextured Gouraud triangles (per-vertex
+//   colors only).  Adding texturing there would change the entire
+//   rasterizer variant (from Smooth to MappingPerspective), which is
+//   slower.  A separate overlay pass is cleaner and keeps the fast
+//   path for the main faces.
+// ═══════════════════════════════════════════════════════════════════
+
+static Texture2D scratchTex;
+static bool scratchLoaded = false;
+
+// Convert a tangent-space normal map into a scratch visibility texture.
+//
+// NORMAL MAP explained:
+//   A normal map stores surface normal perturbations as RGB colors.
+//   - R = X deviation (128 = flat, 0/-1 = left, 255/+1 = right)
+//   - G = Y deviation (128 = flat)
+//   - B = Z component (255 = pointing straight out)
+//
+//   Scratches appear as pixels where R and G deviate from 128 — the
+//   surface normal is tilted.  We extract the magnitude of that tilt
+//   and use it as alpha in a white RGBA texture: bright alpha = scratch,
+//   zero alpha = smooth surface.
+void InitScratchTexture() {
+    Image img = LoadImage("scratches.png");
+    if (img.data == NULL) return;
+
+    // Ensure RGBA format for per-pixel manipulation
+    ImageFormat(&img, PIXELFORMAT_UNCOMPRESSED_R8G8B8A8);
+    unsigned char* px = (unsigned char*)img.data;
+    int count = img.width * img.height;
+
+    for (int i = 0; i < count; i++) {
+        // Extract tangent-space deviation from "flat" (128, 128)
+        float dx = px[i*4 + 0] / 255.0f - 0.5f;  // X deviation
+        float dy = px[i*4 + 1] / 255.0f - 0.5f;  // Y deviation
+        float strength = sqrtf(dx*dx + dy*dy) * 4.0f;
+        if (strength > 1.0f) strength = 1.0f;
+
+        // Output: white pixel, alpha = scratch visibility
+        px[i*4 + 0] = 255;
+        px[i*4 + 1] = 255;
+        px[i*4 + 2] = 255;
+        px[i*4 + 3] = (unsigned char)(strength * 180);
+    }
+
+    scratchTex = LoadTextureFromImage(img);
+    UnloadImage(img);
+    scratchLoaded = true;
+    TraceLog(LOG_INFO, "SCRATCH: Loaded scratch overlay texture");
+}
+
+// Draw scratch highlights on all visible faces of a die.
+//
+// For each front-facing face:
+//   1. Build a tangent frame (same as number decals)
+//   2. Place a textured quad covering the face, offset slightly above
+//   3. UV coordinates vary per face for visual variety (using face index)
+//   4. Vertex color intensity is modulated by face lighting — bright
+//      faces show brighter scratches, shadowed faces show dimmer ones
+//   5. ADDITIVE blend adds scratch brightness to the existing surface
+void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,
+                           Vector3 camPos) {
+    if (!scratchLoaded) return;
+
+    Vector3 wv[MAX_DIE_VERTS];
+    for (int i = 0; i < d.numVerts; i++)
+        wv[i] = Vector3Transform(d.verts[i], xform);
+
+    // Switch to additive blending: scratches ADD brightness to the scene
+    rlSetBlendMode(RL_BLEND_ADDITIVE);
+
+    for (int f = 0; f < d.numFaces; f++) {
+        const Face& face = d.faces[f];
+
+        // Compute face center
+        Vector3 center = {0, 0, 0};
+        for (int i = 0; i < face.count; i++)
+            center = Vector3Add(center, wv[face.idx[i]]);
+        center = Vector3Scale(center, 1.0f / face.count);
+
+        // Backface cull — skip faces pointing away from camera
+        Vector3 n = FaceNormal(wv, face);
+        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
+        if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
+
+        // Build tangent frame from face edge and normal
+        Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
+        Vector3 t1 = fast_normalize(edge);
+        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
+
+        // Cover the full face (larger quad than number decals)
+        float minEdge = 1e9f;
+        for (int i = 0; i < face.count; i++) {
+            Vector3 e = Vector3Subtract(wv[face.idx[(i+1) % face.count]],
+                                        wv[face.idx[i]]);
+            float len = Vector3Length(e);
+            if (len < minEdge) minEdge = len;
+        }
+        float halfSize = minEdge * 0.48f;
+
+        // Offset slightly above face (less than number decals at 0.005)
+        Vector3 off = Vector3Scale(n, 0.003f);
+        Vector3 qCenter = Vector3Add(center, off);
+
+        Vector3 q0 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
+                                Vector3Scale(t2,  halfSize));
+        Vector3 q1 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
+                                Vector3Scale(t2,  halfSize));
+        Vector3 q2 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
+                                Vector3Scale(t2, -halfSize));
+        Vector3 q3 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
+                                Vector3Scale(t2, -halfSize));
+
+        // Offset UVs per face so each face shows a different region of the
+        // scratch pattern.  TinyGL wraps UVs via bitmask, so values > 1 wrap.
+        float uOff = (float)(f * 37 % 8) / 8.0f;
+        float vOff = (float)(f * 53 % 8) / 8.0f;
+
+        // Modulate brightness by how much the key light hits this face.
+        // Front-lit faces get brighter scratches; shadowed faces get dimmer.
+        float lightDot = Vector3DotProduct(n, LIGHT_KEY);
+        if (lightDot < 0) lightDot = 0;
+        unsigned char intensity = (unsigned char)(40 + 120 * lightDot);
+
+        rlSetTexture(scratchTex.id);
+        rlBegin(RL_TRIANGLES);
+            rlColor4ub(intensity, intensity, intensity, 255);
+            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(uOff + 1.f, vOff);       rlVertex3f(q1.x, q1.y, q1.z);
+            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
+            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
+            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
+            rlTexCoord2f(uOff,       vOff + 1.f); rlVertex3f(q3.x, q3.y, q3.z);
+        rlEnd();
+        rlSetTexture(0);
+    }
+
+    // Restore normal alpha blending for subsequent draws
+    rlSetBlendMode(RL_BLEND_ALPHA);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Screen-space bloom post-processing (via TinyGL glPostProcess)
 // ═══════════════════════════════════════════════════════════════════
 //
@@ -1572,6 +1735,7 @@ void DrawHotbar() {
 void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
     if (skyboxLoaded) UnloadTexture(skyboxTex);
+    if (scratchLoaded) UnloadTexture(scratchTex);
     UnloadTexture(bakedFloorTex);
     if (matcapPixels) { RL_FREE(matcapPixels); matcapPixels = NULL; }
 }
