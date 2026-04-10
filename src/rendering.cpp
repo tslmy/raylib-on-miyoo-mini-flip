@@ -1266,7 +1266,7 @@ void InitSkybox() {
 }
 
 // Draw the skybox cylinder centered on the camera.
-// Each of the 16 segments is a vertical quad (2 triangles).
+// Each of the 64 segments is a vertical quad (2 triangles).
 // U texture coordinate maps 0→1 around the 360° panorama.
 void DrawSkybox(Vector3 camPos) {
     if (!skyboxLoaded) return;
@@ -1276,7 +1276,7 @@ void DrawSkybox(Vector3 camPos) {
     rlBegin(RL_TRIANGLES);
     rlColor4ub(255, 255, 255, 255);
 
-    const int SEGS = 16;
+    const int SEGS = 64;
     const float radius = 50.0f;
     const float halfH  = 30.0f;
 
@@ -1342,6 +1342,8 @@ static Texture2D numberAtlas;
 // Generate the number atlas at startup.
 // Renders numbers 0–20 into a grid using raylib's CPU text rendering.
 // Each number is drawn 3 times with slight offsets for a bold/shadow effect.
+// Multi-digit numbers use per-character rendering with fixed spacing to
+// prevent cramped layouts (e.g. "12" where '1' is narrow).
 void InitNumberAtlas() {
     Image img = GenImageColor(ATLAS_SIZE, ATLAS_SIZE, BLANK);
     for (int n = 0; n <= 20; n++) {
@@ -1350,14 +1352,34 @@ void InitNumberAtlas() {
         char buf[4];
         snprintf(buf, sizeof(buf), "%d", n);
         int fontSize = 28;
-        int tw = MeasureText(buf, fontSize);
+        int numChars = (int)strlen(buf);
         Color numCol = {30, 20, 40, 255};
-        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2 + 1,
-                      cy + (ATLAS_CELL_H - fontSize)/2, fontSize, numCol);
-        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2,
-                      cy + (ATLAS_CELL_H - fontSize)/2 + 1, fontSize, numCol);
-        ImageDrawText(&img, buf, cx + (ATLAS_CELL_W - tw)/2,
-                      cy + (ATLAS_CELL_H - fontSize)/2, fontSize, numCol);
+
+        if (numChars == 1) {
+            // Single digit: center normally
+            int tw = MeasureText(buf, fontSize);
+            int x0 = cx + (ATLAS_CELL_W - tw) / 2;
+            int y0 = cy + (ATLAS_CELL_H - fontSize) / 2;
+            ImageDrawText(&img, buf, x0 + 1, y0, fontSize, numCol);
+            ImageDrawText(&img, buf, x0, y0 + 1, fontSize, numCol);
+            ImageDrawText(&img, buf, x0, y0, fontSize, numCol);
+        } else {
+            // Multi-digit: render each character with fixed-width spacing
+            // to prevent "12" looking cramped
+            int charWidth = MeasureText("8", fontSize);  // widest digit
+            int spacing = charWidth + 2;  // gap between characters
+            int totalW = spacing * numChars - 2;
+            int x0 = cx + (ATLAS_CELL_W - totalW) / 2;
+            int y0 = cy + (ATLAS_CELL_H - fontSize) / 2;
+            for (int c = 0; c < numChars; c++) {
+                char ch[2] = {buf[c], '\0'};
+                int cw = MeasureText(ch, fontSize);
+                int charX = x0 + c * spacing + (charWidth - cw) / 2;
+                ImageDrawText(&img, ch, charX + 1, y0, fontSize, numCol);
+                ImageDrawText(&img, ch, charX, y0 + 1, fontSize, numCol);
+                ImageDrawText(&img, ch, charX, y0, fontSize, numCol);
+            }
+        }
     }
     numberAtlas = LoadTextureFromImage(img);
     UnloadImage(img);
@@ -1509,13 +1531,14 @@ void InitScratchTexture() {
 
 // Draw scratch highlights on all visible faces of a die.
 //
-// For each front-facing face:
-//   1. Build a tangent frame (same as number decals)
-//   2. Place a textured quad covering the face, offset slightly above
-//   3. UV coordinates vary per face for visual variety (using face index)
-//   4. Vertex color intensity is modulated by face lighting — bright
-//      faces show brighter scratches, shadowed faces show dimmer ones
-//   5. ADDITIVE blend adds scratch brightness to the existing surface
+// Uses actual face geometry (triangle fan from center) instead of a
+// bounding quad.  This ensures the overlay exactly covers each face —
+// no overflow on triangles (D4/D8/D20), no gaps on larger faces.
+//
+// Per-vertex UVs are computed by projecting each vertex onto the face's
+// tangent frame, then scaling so the texture tiles across the face.
+// A per-face UV offset provides variety (each face shows a different
+// region of the scratch pattern).
 void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,
                            Vector3 camPos) {
     if (!scratchLoaded) return;
@@ -1524,76 +1547,69 @@ void DrawDieScratchOverlay(const ActiveDie& d, const Matrix& xform,
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
 
-    // Switch to additive blending: scratches ADD brightness to the scene
+    // Additive blending: scratches brighten the surface
     rlSetBlendMode(RL_BLEND_ADDITIVE);
 
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
 
-        // Compute face center
         Vector3 center = {0, 0, 0};
         for (int i = 0; i < face.count; i++)
             center = Vector3Add(center, wv[face.idx[i]]);
         center = Vector3Scale(center, 1.0f / face.count);
 
-        // Backface cull — skip faces pointing away from camera
         Vector3 n = FaceNormal(wv, face);
         Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
         if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
 
-        // Build tangent frame from face edge and normal
+        // Tangent frame for UV projection
         Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
         Vector3 t1 = fast_normalize(edge);
         Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
 
-        // Cover the full face (larger quad than number decals)
-        float minEdge = 1e9f;
-        for (int i = 0; i < face.count; i++) {
-            Vector3 e = Vector3Subtract(wv[face.idx[(i+1) % face.count]],
-                                        wv[face.idx[i]]);
-            float len = Vector3Length(e);
-            if (len < minEdge) minEdge = len;
-        }
-        float halfSize = minEdge * 0.48f;
+        // UV scale: how many world units per full texture tile.
+        // Use the die radius so scratches are consistently sized across dice types.
+        float uvScale = 1.0f / (DIE_RADIUS * 1.4f);
 
-        // Offset slightly above face (less than number decals at 0.005)
-        Vector3 off = Vector3Scale(n, 0.003f);
-        Vector3 qCenter = Vector3Add(center, off);
-
-        Vector3 q0 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
-                                Vector3Scale(t2,  halfSize));
-        Vector3 q1 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
-                                Vector3Scale(t2,  halfSize));
-        Vector3 q2 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
-                                Vector3Scale(t2, -halfSize));
-        Vector3 q3 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
-                                Vector3Scale(t2, -halfSize));
-
-        // Offset UVs per face so each face shows a different region of the
-        // scratch pattern.  TinyGL wraps UVs via bitmask, so values > 1 wrap.
+        // Per-face UV offset for variety
         float uOff = (float)(f * 37 % 8) / 8.0f;
         float vOff = (float)(f * 53 % 8) / 8.0f;
 
-        // Modulate brightness by how much the key light hits this face.
-        // Front-lit faces get brighter scratches; shadowed faces get dimmer.
+        // Light modulation: brighter scratches on lit faces
         float lightDot = Vector3DotProduct(n, LIGHT_KEY);
         if (lightDot < 0) lightDot = 0;
-        unsigned char intensity = (unsigned char)(40 + 120 * lightDot);
+        unsigned char intensity = (unsigned char)(40 + 160 * lightDot);
 
+        // Offset slightly above face surface
+        Vector3 off = Vector3Scale(n, 0.003f);
+
+        // Compute per-vertex UVs by projecting onto tangent frame
+        float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
+        Vector3 vertPos[MAX_FACE_VERTS];
+        for (int i = 0; i < face.count; i++) {
+            Vector3 p = Vector3Add(wv[face.idx[i]], off);
+            vertPos[i] = p;
+            Vector3 rel = Vector3Subtract(p, center);
+            vertU[i] = Vector3DotProduct(rel, t1) * uvScale + uOff;
+            vertV[i] = Vector3DotProduct(rel, t2) * uvScale + vOff;
+        }
+
+        // Fan-triangulate from vertex 0 (same as DrawDieFacesLit)
         rlSetTexture(scratchTex.id);
         rlBegin(RL_TRIANGLES);
-            rlColor4ub(intensity, intensity, intensity, 255);
-            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(uOff + 1.f, vOff);       rlVertex3f(q1.x, q1.y, q1.z);
-            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(uOff,       vOff + 1.f); rlVertex3f(q3.x, q3.y, q3.z);
+        rlColor4ub(intensity, intensity, intensity, 255);
+        for (int j = 1; j < face.count - 1; j++) {
+            rlTexCoord2f(vertU[0], vertV[0]);
+            rlVertex3f(vertPos[0].x, vertPos[0].y, vertPos[0].z);
+            rlTexCoord2f(vertU[j], vertV[j]);
+            rlVertex3f(vertPos[j].x, vertPos[j].y, vertPos[j].z);
+            rlTexCoord2f(vertU[j+1], vertV[j+1]);
+            rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
+        }
         rlEnd();
         rlSetTexture(0);
     }
 
-    // Restore normal alpha blending for subsequent draws
     rlSetBlendMode(RL_BLEND_ALPHA);
 }
 
@@ -1648,7 +1664,7 @@ void InitDirtTexture() {
 
         // How much does this pixel's bump deviate from flat lighting?
         float NdotL = nx * lx + ny * ly + nz * lz;
-        float delta = (NdotL - flatDot) * 3.0f;  // amplify for visibility
+        float delta = (NdotL - flatDot) * 5.0f;  // amplify for visibility
 
         if (delta > 0) {
             // Bump faces light → white highlight
@@ -1657,7 +1673,7 @@ void InitDirtTexture() {
             px[i*4 + 0] = 255;
             px[i*4 + 1] = 255;
             px[i*4 + 2] = 255;
-            px[i*4 + 3] = (unsigned char)(a * 80);
+            px[i*4 + 3] = (unsigned char)(a * 180);
         } else {
             // Crevice → black shadow
             float a = -delta;
@@ -1665,7 +1681,7 @@ void InitDirtTexture() {
             px[i*4 + 0] = 0;
             px[i*4 + 1] = 0;
             px[i*4 + 2] = 0;
-            px[i*4 + 3] = (unsigned char)(a * 50);
+            px[i*4 + 3] = (unsigned char)(a * 130);
         }
     }
 
@@ -1676,7 +1692,8 @@ void InitDirtTexture() {
 }
 
 // Draw dirt bump highlights/shadows on all visible faces.
-// Uses standard alpha blending: white pixels brighten (bumps catching
+// Uses actual face geometry (triangle fan) for exact coverage.
+// Standard alpha blending: white pixels brighten (bumps catching
 // light), black pixels darken (crevices in shadow).
 void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,
                         Vector3 camPos) {
@@ -1702,41 +1719,37 @@ void DrawDieDirtOverlay(const ActiveDie& d, const Matrix& xform,
         Vector3 t1 = fast_normalize(edge);
         Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
 
-        float minEdge = 1e9f;
-        for (int i = 0; i < face.count; i++) {
-            Vector3 e = Vector3Subtract(wv[face.idx[(i+1) % face.count]],
-                                        wv[face.idx[i]]);
-            float len = Vector3Length(e);
-            if (len < minEdge) minEdge = len;
-        }
-        float halfSize = minEdge * 0.48f;
-
-        // Offset between face surface and scratch overlay
-        Vector3 off = Vector3Scale(n, 0.002f);
-        Vector3 qCenter = Vector3Add(center, off);
-
-        Vector3 q0 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
-                                Vector3Scale(t2,  halfSize));
-        Vector3 q1 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
-                                Vector3Scale(t2,  halfSize));
-        Vector3 q2 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1,  halfSize)),
-                                Vector3Scale(t2, -halfSize));
-        Vector3 q3 = Vector3Add(Vector3Add(qCenter, Vector3Scale(t1, -halfSize)),
-                                Vector3Scale(t2, -halfSize));
+        // UV scale consistent with scratch overlay
+        float uvScale = 1.0f / (DIE_RADIUS * 1.4f);
 
         // Different UV offset pattern than scratches for visual variety
         float uOff = (float)(f * 61 % 8) / 8.0f;
         float vOff = (float)(f * 43 % 8) / 8.0f;
 
+        // Offset between face surface and scratch overlay
+        Vector3 off = Vector3Scale(n, 0.002f);
+
+        float vertU[MAX_FACE_VERTS], vertV[MAX_FACE_VERTS];
+        Vector3 vertPos[MAX_FACE_VERTS];
+        for (int i = 0; i < face.count; i++) {
+            Vector3 p = Vector3Add(wv[face.idx[i]], off);
+            vertPos[i] = p;
+            Vector3 rel = Vector3Subtract(p, center);
+            vertU[i] = Vector3DotProduct(rel, t1) * uvScale + uOff;
+            vertV[i] = Vector3DotProduct(rel, t2) * uvScale + vOff;
+        }
+
         rlSetTexture(dirtTex.id);
         rlBegin(RL_TRIANGLES);
-            rlColor4ub(255, 255, 255, 255);
-            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(uOff + 1.f, vOff);       rlVertex3f(q1.x, q1.y, q1.z);
-            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(uOff,       vOff);       rlVertex3f(q0.x, q0.y, q0.z);
-            rlTexCoord2f(uOff + 1.f, vOff + 1.f); rlVertex3f(q2.x, q2.y, q2.z);
-            rlTexCoord2f(uOff,       vOff + 1.f); rlVertex3f(q3.x, q3.y, q3.z);
+        rlColor4ub(255, 255, 255, 255);
+        for (int j = 1; j < face.count - 1; j++) {
+            rlTexCoord2f(vertU[0], vertV[0]);
+            rlVertex3f(vertPos[0].x, vertPos[0].y, vertPos[0].z);
+            rlTexCoord2f(vertU[j], vertV[j]);
+            rlVertex3f(vertPos[j].x, vertPos[j].y, vertPos[j].z);
+            rlTexCoord2f(vertU[j+1], vertV[j+1]);
+            rlVertex3f(vertPos[j+1].x, vertPos[j+1].y, vertPos[j+1].z);
+        }
         rlEnd();
         rlSetTexture(0);
     }
