@@ -796,18 +796,20 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 // Screen-space bloom post-processing (via TinyGL glPostProcess)
 // ═══════════════════════════════════════════════════════════════════
 
-// Bloom + vignette + depth fog post-processing
+// Bloom + depth fog post-processing
 // TinyGL 32-bit pixel format: 0x00RRGGBB, z is 16-bit depth
 static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort z) {
     unsigned int r = (pixel >> 16) & 0xFF;
     unsigned int g = (pixel >> 8)  & 0xFF;
     unsigned int b =  pixel        & 0xFF;
 
-    // Bloom: boost bright pixels (specular highlights)
+    // Luminance (perceptual)
     float lum = (r * 0.299f + g * 0.587f + b * 0.114f) / 255.0f;
+
+    // Only boost pixels above brightness threshold
     if (lum > 0.80f) {
-        float excess = (lum - 0.80f) / 0.20f;
-        float boost = 1.0f + excess * 0.40f;
+        float excess = (lum - 0.80f) / 0.20f;  // 0..1 above threshold
+        float boost = 1.0f + excess * 0.40f;    // max 1.4x boost
         r = (unsigned int)(r * boost); if (r > 255) r = 255;
         g = (unsigned int)(g * boost); if (g > 255) g = 255;
         b = (unsigned int)(b * boost); if (b > 255) b = 255;
@@ -825,16 +827,6 @@ static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort 
         b = (unsigned int)(b * (1.0f - fogAmount) + 150 * fogAmount);
     }
 
-    // Vignette: darken edges of the screen
-    float nx = (x - SCR_W * 0.5f) / (SCR_W * 0.5f);
-    float ny = (y - SCR_H * 0.5f) / (SCR_H * 0.5f);
-    float dist2 = nx * nx + ny * ny;
-    float vignette = 1.0f - dist2 * 0.25f;
-    if (vignette < 0.5f) vignette = 0.5f;
-
-    r = (unsigned int)(r * vignette);
-    g = (unsigned int)(g * vignette);
-    b = (unsigned int)(b * vignette);
 
     return (r << 16) | (g << 8) | b;
 }
