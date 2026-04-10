@@ -47,10 +47,6 @@ int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};
 int hotbarSel = 1;           // d6 selected by default
 int riggedValue = -1;        // -1 = fair; 0-20 = always show this value
 
-const int DEBOUNCE_FRAMES = 3; // ignore repeated presses for 3 frames (~0.1s)
-int debounceY = 0;
-int debounceX = 0;
-
 // ═══════════════════════════════════════════════════════════════════
 // Bullet3 physics world
 // ═══════════════════════════════════════════════════════════════════
