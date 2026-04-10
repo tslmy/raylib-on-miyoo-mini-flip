@@ -183,11 +183,11 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         if (fillSpec < 0) fillSpec = 0;
         fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
 
-        // Fresnel rim
+        // Fresnel rim — strong edge glow for glass-like appearance
         float NdotV = Vector3DotProduct(n, viewDir);
         if (NdotV < 0) NdotV = 0;
         float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
-        float rim = fresnel * 0.35f;
+        float rim = fresnel * 0.55f;
 
         // Compose
         float dimFactor = (face.value >= 0) ? 1.0f : 0.6f;
@@ -197,18 +197,22 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         float sg = base.g * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
         float sb = base.b * diffuse * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
+        // Environment reflection — stronger at glancing angles (Fresnel)
         float envUp = n.y * 0.5f + 0.5f;
         float envR = 140.0f * envUp + 100.0f * (1.0f - envUp);
         float envG = 150.0f * envUp +  80.0f * (1.0f - envUp);
         float envB = 170.0f * envUp +  60.0f * (1.0f - envUp);
-        sr = sr * 0.88f + envR * 0.12f;
-        sg = sg * 0.88f + envG * 0.12f;
-        sb = sb * 0.88f + envB * 0.12f;
+        float envMix = 0.10f + fresnel * 0.20f;  // more env reflection at edges
+        sr = sr * (1.0f - envMix) + envR * envMix;
+        sg = sg * (1.0f - envMix) + envG * envMix;
+        sb = sb * (1.0f - envMix) + envB * envMix;
 
         if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
-        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb,
-                     (unsigned char)DICE_ALPHA};
+        // Fresnel-based alpha: edges look more opaque (glass refraction effect)
+        unsigned char faceAlpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.6f);
+
+        Color col = {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, faceAlpha};
 
         for (int j = 1; j < face.count - 1; j++)
             DrawTriangle3D(wv[face.idx[0]], wv[face.idx[j]], wv[face.idx[j+1]], col);
@@ -329,8 +333,8 @@ void DrawFloorReflections(Vector3 camPos) {
 
             // Fade reflection based on distance from floor — closer dice = stronger reflection
             float dieY = xf.m13;  // original die Y position
-            float fade = 1.0f / (1.0f + dieY * 2.0f);
-            unsigned char alpha = (unsigned char)(70 * fade);  // subtle glossy reflection
+            float fade = 1.0f / (1.0f + dieY * 1.5f);
+            unsigned char alpha = (unsigned char)(120 * fade);  // visible glossy reflection
 
             rlColor4ub(cr, cg, cb, alpha);
             for (int j = 1; j < nv - 1; j++) {
@@ -747,6 +751,36 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
         rlEnd();
         rlSetTexture(0);
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Screen-space bloom post-processing (via TinyGL glPostProcess)
+// ═══════════════════════════════════════════════════════════════════
+
+// Bloom: threshold 0.85, strength 0.3 — mimics Three.js UnrealBloomPass
+// TinyGL 32-bit pixel format: 0x00RRGGBB
+static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort z) {
+    unsigned int r = (pixel >> 16) & 0xFF;
+    unsigned int g = (pixel >> 8)  & 0xFF;
+    unsigned int b =  pixel        & 0xFF;
+
+    // Luminance (perceptual)
+    float lum = (r * 0.299f + g * 0.587f + b * 0.114f) / 255.0f;
+
+    // Only boost pixels above brightness threshold
+    if (lum > 0.80f) {
+        float excess = (lum - 0.80f) / 0.20f;  // 0..1 above threshold
+        float boost = 1.0f + excess * 0.40f;    // max 1.4x boost
+        r = (unsigned int)(r * boost); if (r > 255) r = 255;
+        g = (unsigned int)(g * boost); if (g > 255) g = 255;
+        b = (unsigned int)(b * boost); if (b > 255) b = 255;
+    }
+
+    return (r << 16) | (g << 8) | b;
+}
+
+void ApplyBloomPostProcess() {
+    glPostProcess(BloomPostProcessCallback);
 }
 
 // ═══════════════════════════════════════════════════════════════════

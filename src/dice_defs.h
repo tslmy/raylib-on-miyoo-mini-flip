@@ -30,7 +30,7 @@ static const int SCR_W = 752;
 static const int SCR_H = 560;
 
 static const float DIE_RADIUS = 0.7f;
-static const int DICE_ALPHA = 200;  // ~78% opacity
+static const int DICE_ALPHA = 160;  // ~63% opacity (more glass-like)
 #define MAX_ACTIVE_DICE 12
 
 inline float RandF(float lo, float hi) {
