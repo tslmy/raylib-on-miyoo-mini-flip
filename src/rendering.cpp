@@ -59,6 +59,7 @@
 #include "rlgl.h"
 #include <GL/gl.h>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -79,6 +80,37 @@
 
 const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
+
+// ═══════════════════════════════════════════════════════════════════
+// Fast math helpers — avoid libm overhead in hot per-vertex loops
+// ═══════════════════════════════════════════════════════════════════
+
+// Fast x^5 via repeated multiplication (3 muls instead of libm powf).
+// Used for Schlick's Fresnel approximation: F = F0 + (1-F0)(1-cosθ)^5
+static inline float pow5f(float x) {
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
+// Fast inverse square root (Quake III "Q_rsqrt" trick).
+// Uses a clever bit-level hack: reinterpret the float's bits as an
+// integer, apply a magic constant that gives a good initial estimate,
+// then refine with one Newton-Raphson iteration.
+// Accuracy: ~0.2% error — plenty for lighting math.
+static inline float fast_rsqrtf(float x) {
+    union { float f; uint32_t i; } conv = {x};
+    conv.i = 0x5f3759df - (conv.i >> 1);            // magic number initial guess
+    conv.f *= 1.5f - (x * 0.5f * conv.f * conv.f);  // Newton-Raphson step
+    return conv.f;
+}
+
+// Fast normalize using fast_rsqrtf (avoids sqrtf + division).
+static inline Vector3 fast_normalize(Vector3 v) {
+    float len2 = v.x*v.x + v.y*v.y + v.z*v.z;
+    if (len2 < 1e-8f) return v;
+    float inv = fast_rsqrtf(len2);
+    return {v.x * inv, v.y * inv, v.z * inv};
+}
 
 // ═══════════════════════════════════════════════════════════════════
 // Spherical Harmonics L2 — environment lighting from the skybox
@@ -305,7 +337,7 @@ static Color SampleMatCap(Vector3 normal, Vector3 viewDir) {
     // forward = direction the camera is looking.
     Vector3 forward = {-viewDir.x, -viewDir.y, -viewDir.z};
     Vector3 up = {0, 1, 0};
-    Vector3 right = Vector3Normalize(Vector3CrossProduct(up, forward));
+    Vector3 right = fast_normalize(Vector3CrossProduct(up, forward));
     up = Vector3CrossProduct(forward, right);  // re-orthogonalize
 
     // Project the world normal into view space by dotting with right/up.
@@ -477,7 +509,7 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
                        float dimFactor) {
     // VIEW DIRECTION: vector from vertex toward the camera.
     // Many lighting calculations need to know where the viewer is.
-    Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, pos));
+    Vector3 viewDir = fast_normalize(Vector3Subtract(camPos, pos));
 
     // ── DIFFUSE LIGHTING ──
     // How bright is this surface?  Combine SH environment (soft, colored,
@@ -503,7 +535,8 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     // When the surface normal aligns with it, light reflects straight into
     // the camera — you see a bright "hot spot".  Raising to pow-16 makes
     // it tight and shiny (higher power = smaller, sharper highlight).
-    Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
+    // Specular: Blinn-Phong pow-16 (key light)
+    Vector3 halfVec = fast_normalize(Vector3Add(LIGHT_KEY, viewDir));
     float specDot = Vector3DotProduct(normal, halfVec);
     if (specDot < 0) specDot = 0;
     float spec = specDot;
@@ -524,8 +557,11 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
         float sx = ((s2 & 0xFF) / 255.0f - 0.5f) * 0.15f;
         float sz = (((s2 >> 8) & 0xFF) / 255.0f - 0.5f) * 0.05f;
         ccN.x += sx; ccN.z += sz;
-        float len = sqrtf(ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z);
-        if (len > 0.001f) { ccN.x /= len; ccN.y /= len; ccN.z /= len; }
+        float len2 = ccN.x*ccN.x + ccN.y*ccN.y + ccN.z*ccN.z;
+        if (len2 > 1e-6f) {
+            float inv = fast_rsqrtf(len2);
+            ccN.x *= inv; ccN.y *= inv; ccN.z *= inv;
+        }
     }
     float ccSpecDot = Vector3DotProduct(ccN, halfVec);
     if (ccSpecDot < 0) ccSpecDot = 0;
@@ -537,7 +573,7 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     // A subtle secondary highlight from the fill light.  Lower power
     // = broader, softer spot.  This prevents the fill side from looking
     // completely flat.
-    Vector3 halfFill = Vector3Normalize(Vector3Add(LIGHT_FILL, viewDir));
+    Vector3 halfFill = fast_normalize(Vector3Add(LIGHT_FILL, viewDir));
     float fillSpec = Vector3DotProduct(normal, halfFill);
     if (fillSpec < 0) fillSpec = 0;
     fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
@@ -553,7 +589,7 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     //   θ  = angle between normal and view direction
     float NdotV = Vector3DotProduct(normal, viewDir);
     if (NdotV < 0) NdotV = 0;
-    float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
+    float fresnel = 0.04f + 0.96f * pow5f(1.0f - NdotV);
     float rim = fresnel * 0.55f;  // scale for visual taste
 
     // ── COMPOSE: add up all lighting contributions ──
@@ -622,7 +658,7 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         }
     }
     for (int i = 0; i < d.numVerts; i++)
-        vertNormals[i] = Vector3Normalize(vertNormals[i]);
+        vertNormals[i] = fast_normalize(vertNormals[i]);
 
     // Pre-compute per-vertex lit colors
     Color vertColors[MAX_DIE_VERTS];
@@ -698,7 +734,7 @@ void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 
     // Draw edges as thin lines offset slightly toward camera
     Vector3 center = {xform.m12, xform.m13, xform.m14};
-    Vector3 toCamera = Vector3Normalize(Vector3Subtract(camPos, center));
+    Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
 
     rlBegin(RL_LINES);
     for (int i = 0; i < numEdges; i++) {
@@ -750,8 +786,8 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
         }
         faceCtr.x /= face.count; faceCtr.y /= face.count; faceCtr.z /= face.count;
 
-        Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, faceCtr));
-        Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
+        Vector3 viewDir = fast_normalize(Vector3Subtract(camPos, faceCtr));
+        Vector3 halfVec = fast_normalize(Vector3Add(LIGHT_KEY, viewDir));
         float specDot = Vector3DotProduct(n, halfVec);
         if (specDot < 0) specDot = 0;
         float spec = specDot;
@@ -841,9 +877,9 @@ void DrawFloorReflections(Vector3 camPos) {
                 wv[v] = Vector3Transform(dice[di].verts[dice[di].faces[f].idx[v]], reflXf);
             }
             // Face normal in reflected space
-            Vector3 fn = Vector3Normalize(Vector3CrossProduct(
+            Vector3 fn = fast_normalize(Vector3CrossProduct(
                 Vector3Subtract(wv[1], wv[0]), Vector3Subtract(wv[2], wv[0])));
-            Vector3 toEye = Vector3Normalize(Vector3Subtract(mirrorCam, wv[0]));
+            Vector3 toEye = fast_normalize(Vector3Subtract(mirrorCam, wv[0]));
             if (Vector3DotProduct(fn, toEye) > 0) continue;  // flipped cull (Y-flip inverts winding)
 
             // Use the die's pastel color, heavily faded
@@ -1356,12 +1392,12 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
         center = Vector3Scale(center, 1.0f / face.count);
 
         Vector3 n = FaceNormal(wv, face);
-        Vector3 toCamera = Vector3Normalize(Vector3Subtract(camPos, center));
+        Vector3 toCamera = fast_normalize(Vector3Subtract(camPos, center));
         if (Vector3DotProduct(n, toCamera) < 0.1f) continue;
 
         Vector3 edge = Vector3Subtract(wv[face.idx[1]], wv[face.idx[0]]);
-        Vector3 t1 = Vector3Normalize(edge);
-        Vector3 t2 = Vector3Normalize(Vector3CrossProduct(n, t1));
+        Vector3 t1 = fast_normalize(edge);
+        Vector3 t2 = fast_normalize(Vector3CrossProduct(n, t1));
 
         float minEdge = 1e9f;
         for (int i = 0; i < face.count; i++) {
