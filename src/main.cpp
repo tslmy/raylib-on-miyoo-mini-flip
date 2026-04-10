@@ -145,10 +145,9 @@ int main(int argc, char **argv) {
         DrawFloorReflections(camera.position);
 
         // Enable blend for transparent geometry.
-        // TinyGL's GL_SMOOTH blend path hardcodes alpha=255; GL_FLAT works correctly.
         rlEnableColorBlend();
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glShadeModel(GL_FLAT);
+        glShadeModel(GL_FLAT);  // shadows/decals use flat; DrawDieFacesLit switches to smooth
 
         // Projected outline shadows
         for (int i = 0; i < numDice; i++) {
