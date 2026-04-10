@@ -47,7 +47,7 @@ int hotbarCount[NUM_DICE_TYPES] = {1, 2, 1, 0, 0, 0};  // start with 1×d4, 2×d
 int hotbarSel = 1;           // d6 selected by default
 int riggedValue = -1;        // -1 = fair; 0-20 = always show this value
 
-const int DEBOUNCE_FRAMES = 12;  // ignore repeated presses for 12 frames (~0.4s)
+const int DEBOUNCE_FRAMES = 6; // ignore repeated presses for 6 frames (~0.2s)
 int debounceY = 0;
 int debounceX = 0;
 
