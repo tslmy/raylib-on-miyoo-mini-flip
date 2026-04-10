@@ -1253,10 +1253,15 @@ void DrawTexturedGround(float halfSize, float tileRepeat) {
 static Texture2D skyboxTex;
 static bool skyboxLoaded = false;
 
-// Load the skybox panorama image and upload to GPU texture.
+// Load the skybox panorama image, upscale for smoother appearance,
+// and upload to GPU texture.  The on-disk image is kept small (256×256)
+// to save storage; we bilinear-resize it at load time so it doesn't
+// look blocky when stretched across the cylinder.
 void InitSkybox() {
     Image img = LoadImage("skybox.png");
     if (img.data != NULL) {
+        // Upscale 2× with bilinear filtering for a smoother panorama
+        if (img.width <= 256) ImageResize(&img, img.width * 2, img.height * 2);
         skyboxTex = LoadTextureFromImage(img);
         UnloadImage(img);
         skyboxLoaded = true;
@@ -1274,7 +1279,7 @@ void DrawSkybox(Vector3 camPos) {
     rlBegin(RL_TRIANGLES);
     rlColor4ub(255, 255, 255, 255);
 
-    const int SEGS = 16;
+    const int SEGS = 48;
     const float radius = 50.0f;
     const float halfH  = 30.0f;
 
