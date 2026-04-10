@@ -1,3 +1,59 @@
+// ═══════════════════════════════════════════════════════════════════
+// rendering.cpp — All visual output: lighting, shadows, reflections,
+//                 textures, skybox, post-processing, and UI.
+// ═══════════════════════════════════════════════════════════════════
+//
+// RENDERING PIPELINE OVERVIEW:
+//
+//   "Rendering" means turning 3D geometry into a 2D image on screen.
+//   We use a SOFTWARE RENDERER (TinyGL) — the CPU does all the math
+//   that a GPU would normally handle.  This is slow but works on the
+//   MMF which has no GPU.
+//
+//   Each frame, we draw layers in a specific order (back to front):
+//     1. Skybox          — the background "sky dome"
+//     2. Textured floor  — a pre-lit hardwood quad
+//     3. Floor reflections — upside-down copies of dice, faded
+//     4. Shadows         — dark silhouettes projected onto the floor
+//     5. Dice faces      — translucent, Gouraud-shaded, PBR-lit
+//     6. Number decals   — digits painted on each face
+//     7. Edge wireframes — subtle white outlines
+//     8. Bloom glow      — bright halos on specular highlights
+//     9. Post-processing — per-pixel bloom boost + depth fog
+//    10. UI overlay      — hotbar, result text, FPS
+//
+// KEY GRAPHICS CONCEPTS USED HERE:
+//
+//   DIFFUSE LIGHTING — how bright a surface is based on its angle
+//     to the light.  A surface facing the light is bright; one
+//     facing away is dark.  Computed via dot product of the surface
+//     normal and light direction.
+//
+//   SPECULAR HIGHLIGHT — the shiny "hot spot" you see on glossy
+//     objects.  Computed using the "half vector" (halfway between
+//     the light direction and the view direction).  Raising it to
+//     a high power (e.g. pow-16) makes it tight and shiny.
+//
+//   FRESNEL EFFECT — edges of transparent objects look more opaque
+//     and reflective than the center.  Look at a glass from the
+//     side vs. straight on — the side is mirror-like.  Computed
+//     from the angle between the surface normal and view direction.
+//
+//   GOURAUD SHADING — instead of one color per face ("flat shading"),
+//     we compute a color at each VERTEX and let the rasterizer
+//     smoothly interpolate between them.  This creates soft gradients
+//     across faces, making curved objects look smooth.
+//
+//   ALPHA BLENDING — mixing a semi-transparent foreground pixel with
+//     the background behind it.  alpha=255 is opaque, alpha=0 is
+//     invisible.  Formula: result = src×alpha + dst×(1-alpha).
+//
+//   DEPTH SORTING — transparent objects must be drawn back-to-front
+//     (the "painter's algorithm") so that further dice are behind
+//     nearer ones.  Opaque objects can rely on the Z-buffer, but
+//     transparent ones cannot.
+// ═══════════════════════════════════════════════════════════════════
+
 #include "rendering.h"
 #include "physics.h"
 #include "rlgl.h"
@@ -7,19 +63,70 @@
 #include <cstring>
 
 // ═══════════════════════════════════════════════════════════════════
-// Lighting
+// Lighting — two-light studio setup
 // ═══════════════════════════════════════════════════════════════════
+//
+// Real-world photography and film use a "key + fill" lighting setup:
+//   KEY LIGHT  — the main, brightest light (like the sun).  It comes
+//                from upper-right-front and creates the primary
+//                shadows and highlights.
+//   FILL LIGHT — a softer, dimmer light from the opposite side.  It
+//                fills in the shadows so they're not pitch black.
+//
+// These are DIRECTIONAL lights (infinitely far away, like the sun),
+// represented as normalized direction vectors pointing FROM the
+// surface TOWARD the light source.
 
 const Vector3 LIGHT_KEY  = Vector3Normalize((Vector3){0.4f, 0.8f, 0.5f});
 const Vector3 LIGHT_FILL = Vector3Normalize((Vector3){-0.5f, 0.3f, -0.3f});
 
 // ═══════════════════════════════════════════════════════════════════
-// Spherical Harmonics L2 (9 coefficients × RGB) for environment IBL
+// Spherical Harmonics L2 — environment lighting from the skybox
 // ═══════════════════════════════════════════════════════════════════
+//
+// WHAT ARE SPHERICAL HARMONICS (SH)?
+//
+//   Imagine you're standing in the center of a room.  Light comes at
+//   you from every direction — bright from the window, dim from the
+//   floor, tinted from colored walls.  This "light from all around"
+//   is called ENVIRONMENT LIGHTING or IMAGE-BASED LIGHTING (IBL).
+//
+//   To capture all that information, you'd need a value for every
+//   possible direction — infinitely many.  SH compresses this into
+//   just a few numbers using special mathematical functions (like
+//   how a music equalizer captures a song with just bass/mid/treble
+//   levels instead of every individual frequency).
+//
+//   "L2" means we use 9 basis functions (levels 0, 1, and 2),
+//   giving us 9 coefficients × 3 color channels = 27 floats total.
+//   This captures the overall brightness (L0), which direction is
+//   brightest (L1), and broad color variation (L2).  It's not
+//   detailed enough for sharp reflections, but perfect for soft
+//   ambient lighting.
+//
+// HOW WE USE IT:
+//
+//   At startup, we read every pixel of the skybox image, convert
+//   each pixel's position to a direction on a sphere, and
+//   "project" (accumulate) its color into the 9 SH coefficients.
+//
+//   At render time, given a surface normal direction, we evaluate
+//   the SH to get the average light color coming from that
+//   direction — e.g., a surface pointing up gets sky color, a
+//   surface pointing down gets ground color.
+//
+// WHY NOT JUST SAMPLE THE SKYBOX DIRECTLY?
+//
+//   SH evaluation is just 9 multiplies + adds (blazing fast).
+//   Sampling a texture per-vertex would require UV math + memory
+//   access, and can't easily capture light from ALL directions
+//   at once — SH integrates the entire hemisphere automatically.
 
-static float shCoeffs[9][3] = {};  // [basis_index][r,g,b]
+static float shCoeffs[9][3] = {};  // 9 basis functions × RGB channels
 static bool  shReady = false;
 
+// Project the skybox image onto SH basis functions.
+// This is the offline "encoding" step — runs once at startup.
 static void ProjectSkyboxToSH(const char* path) {
     Image sky = LoadImage(path);
     if (sky.data == NULL) return;
@@ -28,42 +135,64 @@ static void ProjectSkyboxToSH(const char* path) {
     int w = sky.width, h = sky.height;
     unsigned char* px = (unsigned char*)sky.data;
 
-    double acc[9][3] = {};
-    double weightSum = 0;
+    // Treat the skybox as an "equirectangular" image:
+    // - x axis = longitude (0° to 360°), called φ (phi)
+    // - y axis = latitude (north pole to south pole), called θ (theta)
+    // For each pixel, we compute the 3D direction it represents,
+    // then multiply its color by each SH basis function and accumulate.
+    double acc[9][3] = {};    // running sum of color × basis × solid_angle
+    double weightSum = 0;     // total solid angle (should sum to ~4π)
 
     for (int y = 0; y < h; y++) {
         float v = ((float)y + 0.5f) / h;
-        float theta = v * PI;           // polar angle [0, π]
+        float theta = v * PI;           // polar angle: 0 = north pole, π = south pole
         float sinTheta = sinf(theta);
         float cosTheta = cosf(theta);
+        // Pixels near the poles represent less area on the sphere than
+        // pixels near the equator.  sinTheta corrects for this distortion.
         float dOmega = sinTheta;        // solid angle weight
 
         for (int x = 0; x < w; x++) {
             float u = ((float)x + 0.5f) / w;
             float phi = u * 2.0f * PI;  // azimuthal [0, 2π]
 
-            // Direction vector
+            // Convert pixel position to a unit direction vector on the sphere.
+            // This is the standard spherical-to-Cartesian conversion:
+            //   x = sin(θ)·sin(φ)    (right/left)
+            //   y = cos(θ)           (up/down)
+            //   z = sin(θ)·cos(φ)    (forward/back)
             float dx = sinTheta * sinf(phi);
             float dy = cosTheta;
             float dz = sinTheta * cosf(phi);
 
+            // Read the pixel color (normalized to 0..1)
             int i = (y * w + x) * 3;
             float r = px[i] / 255.0f;
             float g = px[i+1] / 255.0f;
             float b = px[i+2] / 255.0f;
 
-            // SH L2 basis functions (real, orthonormal)
+            // Evaluate the 9 SH basis functions at this direction.
+            // These are the real-valued spherical harmonics up to order 2.
+            // The magic numbers (0.282095, 0.488603, etc.) are normalization
+            // constants that make the basis functions orthonormal — each
+            // function captures an independent "frequency" of variation.
+            //
+            //   L0 (1 function):  constant (average brightness)
+            //   L1 (3 functions): linear (which direction is brightest)
+            //   L2 (5 functions): quadratic (broad color variation)
             float basis[9];
-            basis[0] = 0.282095f;                          // Y00
-            basis[1] = 0.488603f * dy;                     // Y1,0
-            basis[2] = 0.488603f * dz;                     // Y1,1
-            basis[3] = 0.488603f * dx;                     // Y1,-1
-            basis[4] = 1.092548f * dx * dy;                // Y2,-1
-            basis[5] = 1.092548f * dy * dz;                // Y2,0 (note: yz)
-            basis[6] = 0.315392f * (3*dy*dy - 1);         // Y2,1
-            basis[7] = 1.092548f * dx * dz;                // Y2,-2
-            basis[8] = 0.546274f * (dx*dx - dz*dz);       // Y2,2
+            basis[0] = 0.282095f;                          // Y(0,0): constant
+            basis[1] = 0.488603f * dy;                     // Y(1,0): up/down
+            basis[2] = 0.488603f * dz;                     // Y(1,1): front/back
+            basis[3] = 0.488603f * dx;                     // Y(1,-1): left/right
+            basis[4] = 1.092548f * dx * dy;                // Y(2,-1): diagonal
+            basis[5] = 1.092548f * dy * dz;                // Y(2,0): diagonal
+            basis[6] = 0.315392f * (3*dy*dy - 1);         // Y(2,1): top-vs-sides
+            basis[7] = 1.092548f * dx * dz;                // Y(2,-2): diagonal
+            basis[8] = 0.546274f * (dx*dx - dz*dz);       // Y(2,2): left-vs-front
 
+            // Accumulate: color × basis × solid_angle for each channel.
+            // This is a numerical integral over the sphere.
             for (int k = 0; k < 9; k++) {
                 acc[k][0] += r * basis[k] * dOmega;
                 acc[k][1] += g * basis[k] * dOmega;
@@ -86,7 +215,10 @@ static void ProjectSkyboxToSH(const char* path) {
              path, w, h, shCoeffs[0][0], shCoeffs[0][1], shCoeffs[0][2]);
 }
 
-// Evaluate SH irradiance at a given normal direction → returns RGB [0,1]
+// Evaluate SH irradiance at a given surface normal direction.
+// Returns the environment light color (RGB, 0..~2) that a surface
+// facing direction `n` would receive from all directions.
+// This is the runtime "decoding" step — called per-vertex.
 static void EvalSH(Vector3 n, float* outR, float* outG, float* outB) {
     if (!shReady) { *outR = 0.5f; *outG = 0.5f; *outB = 0.5f; return; }
     float basis[9];
@@ -112,12 +244,43 @@ static void EvalSH(Vector3 n, float* outR, float* outG, float* outB) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// MatCap (CPU-side image for per-vertex environment lookup)
+// MatCap — fake environment reflections from a 2D texture
 // ═══════════════════════════════════════════════════════════════════
+//
+// WHAT IS A MATCAP?
+//
+//   "Material Capture" — a photograph of a sphere that captures an
+//   entire material's appearance: color, reflections, highlights,
+//   and shadows, all baked into a single small image.
+//
+//   The trick: if you know which direction a surface faces relative
+//   to the camera (its "view-space normal"), you can look up the
+//   corresponding color in the matcap image.  Surfaces facing the
+//   camera center get the matcap center color; surfaces at the edge
+//   get the matcap edge color (usually brighter, like a rim light).
+//
+// WHY CPU-SIDE?
+//
+//   Normally matcaps are applied per-pixel in a GPU shader.  Since
+//   we have no GPU, we sample per-VERTEX on the CPU and let TinyGL's
+//   Gouraud interpolation blend between vertices.  This is fast
+//   enough (only ~20 vertices per die) and still looks good.
+//
+// HOW THE UV LOOKUP WORKS:
+//
+//   1. Transform the world-space surface normal into view space
+//      (relative to the camera's orientation).
+//   2. Take the x and y components of the view-space normal.
+//   3. Map them to texture coordinates: u = nx*0.5+0.5, v = 0.5-ny*0.5
+//      This maps the center of the sphere (normal pointing at camera)
+//      to the center of the texture, and edges to the texture edges.
 
-static Color* matcapPixels = NULL;
-static int    matcapSize   = 0;
+static Color* matcapPixels = NULL;  // raw pixel data (CPU-side, not a GPU texture)
+static int    matcapSize   = 0;     // width = height (square image)
 
+// Load a matcap image into CPU memory for per-vertex sampling.
+// We keep the raw pixels (not a GPU texture) because we sample them
+// from C++ code, not from a shader.
 static void LoadMatCap(const char* path) {
     Image img = LoadImage(path);
     if (img.data == NULL) {
@@ -132,23 +295,28 @@ static void LoadMatCap(const char* path) {
     TraceLog(LOG_INFO, "MATCAP: Loaded %dx%d from %s", matcapSize, matcapSize, path);
 }
 
-// Sample matcap using view-space normal
+// Sample the matcap at a given world-space normal, viewed from viewDir.
+// Returns the matcap color that this surface orientation would show.
 static Color SampleMatCap(Vector3 normal, Vector3 viewDir) {
     if (!matcapPixels) return {180, 180, 190, 255};
 
-    // Build view-space basis from viewDir
-    Vector3 forward = {-viewDir.x, -viewDir.y, -viewDir.z};  // camera looks along -Z in view space
+    // Build a "view space" coordinate system from the camera direction.
+    // View space has: right = camera's right, up = camera's up,
+    // forward = direction the camera is looking.
+    Vector3 forward = {-viewDir.x, -viewDir.y, -viewDir.z};
     Vector3 up = {0, 1, 0};
     Vector3 right = Vector3Normalize(Vector3CrossProduct(up, forward));
-    up = Vector3CrossProduct(forward, right);
+    up = Vector3CrossProduct(forward, right);  // re-orthogonalize
 
-    // Project world normal into view space
+    // Project the world normal into view space by dotting with right/up.
+    // This tells us "how much does this surface face left/right and up/down
+    // relative to the camera?"
     float nx = Vector3DotProduct(normal, right);
     float ny = Vector3DotProduct(normal, up);
 
-    // Map to UV [0,1]
+    // Map from [-1,+1] normal range to [0,1] texture UV range.
     float u = nx * 0.5f + 0.5f;
-    float v = 0.5f - ny * 0.5f;  // flip Y for image coords
+    float v = 0.5f - ny * 0.5f;  // flip Y because image Y goes downward
 
     int px = (int)(u * (matcapSize - 1));
     int py = (int)(v * (matcapSize - 1));
@@ -161,26 +329,49 @@ static Color SampleMatCap(Vector3 normal, Vector3 viewDir) {
 // ═══════════════════════════════════════════════════════════════════
 // Projected outline shadows
 // ═══════════════════════════════════════════════════════════════════
+//
+// HOW PROJECTED SHADOWS WORK:
+//
+//   For each die, we project every vertex onto the floor along the
+//   key light direction (like holding a flashlight above the die and
+//   tracing where the shadow falls).  The projected points form a
+//   2D shape.  We compute the CONVEX HULL of those points (the
+//   tightest outline) and draw it as a dark polygon on the floor.
+//
+//   PENUMBRA — real shadows have soft edges because light sources
+//   aren't infinitely small.  We fake this by drawing a second,
+//   slightly larger, more transparent polygon around the inner
+//   shadow.  This creates a soft fade-out at the edges.
+//
+//   HEIGHT ATTENUATION — dice high in the air cast fainter shadows
+//   (in real life, shadows spread and soften with distance from the
+//   surface).  We reduce shadow opacity based on die height.
 
 void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
-    const float groundY = 0.002f;
-    const float PENUMBRA = 0.18f;
+    const float groundY = 0.002f;   // slightly above y=0 to avoid Z-fighting with floor
+    const float PENUMBRA = 0.18f;   // how far the soft edge extends (world units)
 
+    // Transform die vertices from local space to world space.
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
 
+    // Project each vertex onto the floor along the light direction.
+    // This is like tracing a ray from each vertex toward the light and
+    // finding where it intersects the y=0 plane.
     Vector2 proj[MAX_DIE_VERTS];
     int nProj = 0;
     for (int i = 0; i < d.numVerts; i++) {
         if (LIGHT_KEY.y <= 0.001f) continue;
-        float t = wv[i].y / LIGHT_KEY.y;
+        float t = wv[i].y / LIGHT_KEY.y;  // parametric distance to floor
         proj[nProj++] = {wv[i].x - LIGHT_KEY.x * t,
                          wv[i].z - LIGHT_KEY.z * t};
     }
     if (nProj < 3) return;
 
-    // 2D convex hull (Andrew's monotone chain)
+    // 2D CONVEX HULL (Andrew's monotone chain algorithm):
+    // Finds the smallest convex polygon containing all projected points.
+    // First sort points by x (then y), then build lower and upper hulls.
     for (int i = 0; i < nProj - 1; i++)
         for (int j = i + 1; j < nProj; j++)
             if (proj[j].x < proj[i].x ||
@@ -210,17 +401,22 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
     int hullCount = k - 1;
     if (hullCount < 3) return;
 
+    // Find the centroid (center point) of the shadow hull.
     float cx = 0, cz = 0;
     for (int i = 0; i < hullCount; i++) { cx += hull[i].x; cz += hull[i].y; }
     cx /= hullCount; cz /= hullCount;
 
-    float height = xform.m13;
+    // Fade shadow based on die height — higher dice = weaker shadow.
+    float height = xform.m13;  // m13 is the Y position in the transform matrix
     if (height < 0) height = 0;
     float intensity = 1.0f - height / 8.0f;
     if (intensity < 0) return;
     unsigned char innerAlpha = (unsigned char)(intensity * 140);
     Color innerCol = {0, 0, 0, innerAlpha};
 
+    // Create the outer (penumbra) hull by pushing each vertex outward
+    // from the centroid.  This creates the soft-edge ring around the
+    // sharp inner shadow.
     Vector2 outerHull[MAX_DIE_VERTS * 2];
     for (int i = 0; i < hullCount; i++) {
         float dx = hull[i].x - cx;
@@ -255,15 +451,41 @@ void DrawProjectedShadow(const ActiveDie& d, Matrix xform) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// PBR-inspired dice face lighting
+// PBR-inspired dice face lighting (the core visual quality)
 // ═══════════════════════════════════════════════════════════════════
+//
+// PBR = "Physically Based Rendering" — a lighting model that tries
+// to approximate how light interacts with real materials.  Our version
+// is simplified for CPU rendering but captures the key visual effects:
+//
+//   DIFFUSE  — base color × how much light hits the surface
+//   SPECULAR — tight bright spots where light reflects toward camera
+//   CLEARCOAT — a second specular layer (like a shiny lacquer coat)
+//   FRESNEL  — edges glow brighter (glass/water effect)
+//   MATCAP   — pre-baked environment reflections from a 2D texture
+//   SH IBL   — soft ambient light color from the skybox
+//
+// All of this is computed PER-VERTEX and then Gouraud-interpolated
+// by TinyGL across each triangle.  This gives smooth color gradients
+// without the expense of per-pixel shading.
 
-// Per-vertex lighting computation for Gouraud shading
+// Compute the lit color for a single vertex.
+// Inputs: vertex position, surface normal, base color, camera position,
+//         dimFactor (0.6 for non-numbered faces, 1.0 for numbered).
+// Returns: final RGBA color including transparency.
 static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
                        float dimFactor) {
+    // VIEW DIRECTION: vector from vertex toward the camera.
+    // Many lighting calculations need to know where the viewer is.
     Vector3 viewDir = Vector3Normalize(Vector3Subtract(camPos, pos));
 
-    // Diffuse: SH environment irradiance + directional lights
+    // ── DIFFUSE LIGHTING ──
+    // How bright is this surface?  Combine SH environment (soft, colored,
+    // comes from all directions) with directional key/fill lights (sharp).
+    // The DOT PRODUCT of normal and light direction gives cos(angle):
+    //   = 1 when surface directly faces the light (bright)
+    //   = 0 when perpendicular (no contribution)
+    //   < 0 when facing away (clamped to 0 — no negative light)
     float shR, shG, shB;
     EvalSH(normal, &shR, &shG, &shB);
     // SH provides ambient; directional lights add contrast
@@ -276,16 +498,26 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     float diffG = shG * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
     float diffB = shB * 0.6f + 0.30f * keyDot + 0.10f * fillDot;
 
-    // Blinn-Phong specular (pow-16) from key light
+    // ── SPECULAR HIGHLIGHT (Blinn-Phong, pow-16 from key light) ──
+    // The HALF VECTOR is halfway between light direction and view direction.
+    // When the surface normal aligns with it, light reflects straight into
+    // the camera — you see a bright "hot spot".  Raising to pow-16 makes
+    // it tight and shiny (higher power = smaller, sharper highlight).
     Vector3 halfVec = Vector3Normalize(Vector3Add(LIGHT_KEY, viewDir));
     float specDot = Vector3DotProduct(normal, halfVec);
     if (specDot < 0) specDot = 0;
     float spec = specDot;
     for (int p = 0; p < 4; p++) spec *= spec;
 
-    // Clearcoat specular (pow-32) with per-vertex procedural scratch
+    // ── CLEARCOAT (second specular layer with procedural scratches) ──
+    // Real dice have a glossy lacquer coating that adds an extra
+    // highlight layer.  We perturb the normal slightly per-vertex using
+    // a hash of the position — this fakes micro-scratches on the surface
+    // that make the clearcoat highlight shimmer and break up.
     Vector3 ccN = normal;
     {
+        // Procedural noise: hash vertex position to get pseudo-random
+        // scratch direction.  Different constants produce different patterns.
         unsigned int s2 = (unsigned int)(pos.x * 5000) * 48271u
                         + (unsigned int)(pos.z * 5000) * 16807u
                         + (unsigned int)(pos.y * 3000) * 65537u;
@@ -301,48 +533,83 @@ static Color LitVertex(Vector3 pos, Vector3 normal, Color base, Vector3 camPos,
     for (int p = 0; p < 5; p++) ccSpec *= ccSpec;
     float clearcoat = 0.5f * ccSpec;
 
-    // Fill specular (pow-4)
+    // ── FILL SPECULAR (softer, from the fill light, pow-4) ──
+    // A subtle secondary highlight from the fill light.  Lower power
+    // = broader, softer spot.  This prevents the fill side from looking
+    // completely flat.
     Vector3 halfFill = Vector3Normalize(Vector3Add(LIGHT_FILL, viewDir));
     float fillSpec = Vector3DotProduct(normal, halfFill);
     if (fillSpec < 0) fillSpec = 0;
     fillSpec = fillSpec * fillSpec * fillSpec * fillSpec;
 
-    // Fresnel rim glow
+    // ── FRESNEL RIM GLOW ──
+    // The Fresnel effect: surfaces viewed at a grazing angle (edges)
+    // become more reflective than surfaces viewed head-on.  This is why
+    // a glass looks transparent when you look through it, but mirror-like
+    // when you look at its edge.
+    //
+    // Schlick's approximation: F = F0 + (1-F0) × (1 - cos(θ))^5
+    //   F0 = 0.04 (glass reflectance at normal incidence)
+    //   θ  = angle between normal and view direction
     float NdotV = Vector3DotProduct(normal, viewDir);
     if (NdotV < 0) NdotV = 0;
     float fresnel = 0.04f + 0.96f * powf(1.0f - NdotV, 5.0f);
-    float rim = fresnel * 0.55f;
+    float rim = fresnel * 0.55f;  // scale for visual taste
 
-    // Compose: per-channel SH diffuse + specular + rim
+    // ── COMPOSE: add up all lighting contributions ──
+    // Final color = base_color × diffuse × dim + white × specular + white × rim
+    // (specular and rim are additive white because they're light reflections,
+    // not colored by the surface material)
     float totalSpec = spec * 0.5f + clearcoat + fillSpec * 0.15f;
     float sr = base.r * diffR * dimFactor + 255.0f * totalSpec + 255.0f * rim;
     float sg = base.g * diffG * dimFactor + 255.0f * totalSpec + 255.0f * rim;
     float sb = base.b * diffB * dimFactor + 255.0f * totalSpec + 255.0f * rim;
 
-    // Environment reflection via MatCap (replaces crude up-down gradient)
+    // ── MATCAP ENVIRONMENT REFLECTION ──
+    // Blend in the matcap color based on Fresnel — edges get more
+    // reflection (physically correct for glass/glossy materials).
     Color mc = SampleMatCap(normal, viewDir);
     float envR = mc.r, envG = mc.g, envB = mc.b;
-    float envMix = 0.15f + fresnel * 0.25f;
-    sr = sr * (1.0f - envMix) + envR * envMix;
+    float envMix = 0.15f + fresnel * 0.25f;  // 15% base + up to 25% at edges
+    sr = sr * (1.0f - envMix) + envR * envMix;  // linear interpolation
     sg = sg * (1.0f - envMix) + envG * envMix;
     sb = sb * (1.0f - envMix) + envB * envMix;
 
     if (sr > 255) sr = 255; if (sg > 255) sg = 255; if (sb > 255) sb = 255;
 
-    // Fresnel-based alpha: edges more opaque (glass refraction)
+    // ── ALPHA (TRANSPARENCY) ──
+    // Base alpha = DICE_ALPHA (160, ~63% opaque).
+    // Fresnel makes edges MORE opaque (simulates glass refraction).
     unsigned char alpha = (unsigned char)(DICE_ALPHA + (255 - DICE_ALPHA) * fresnel * 0.6f);
 
     return {(unsigned char)sr, (unsigned char)sg, (unsigned char)sb, alpha};
 }
 
+// Draw all faces of a die with per-vertex Gouraud shading.
+//
+// GOURAUD SHADING explained:
+//   Instead of giving each face one flat color, we compute a different
+//   color at each vertex (using LitVertex above), then tell TinyGL to
+//   smoothly interpolate between them across the triangle.  This makes
+//   curved surfaces look smooth and gives nice color gradients.
+//
+// VERTEX NORMAL AVERAGING:
+//   Each vertex is shared by multiple faces.  To get smooth shading,
+//   we average the normals of all faces that share a vertex.  This
+//   "smooths out" the hard edges between faces.
 void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
+    // Transform all vertices from local (die) space to world space.
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
         wv[i] = Vector3Transform(d.verts[i], xform);
 
     Color base = d.baseColor;
 
-    // Pre-compute per-vertex averaged normals for smooth shading
+    // Pre-compute per-vertex averaged normals for smooth shading.
+    // For each face, compute its face normal (cross product of two edges),
+    // then add it to every vertex that belongs to that face.
+    // After all faces, normalize each vertex normal to unit length.
+    // This "averages" the surrounding face normals at shared vertices.
     Vector3 vertNormals[MAX_DIE_VERTS] = {};
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
@@ -362,11 +629,16 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     for (int i = 0; i < d.numVerts; i++)
         vertColors[i] = LitVertex(wv[i], vertNormals[i], base, camPos, 1.0f);
 
-    // GL_SMOOTH for Gouraud interpolation (now works with alpha!)
+    // GL_SMOOTH tells TinyGL to interpolate colors between vertices
+    // (Gouraud shading).  Without this, every pixel in a triangle would
+    // have the same color (flat shading).
     glShadeModel(GL_SMOOTH);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
+    // Draw all faces as triangles.  Polygons with >3 vertices are
+    // "fan-triangulated": vertex 0 connects to every consecutive pair.
+    //   e.g., quad {0,1,2,3} → triangles {0,1,2} and {0,2,3}
     rlBegin(RL_TRIANGLES);
     for (int f = 0; f < d.numFaces; f++) {
         const Face& face = d.faces[f];
@@ -393,10 +665,14 @@ void DrawDieFacesLit(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     }
     rlEnd();
 
-    glShadeModel(GL_FLAT);
+    glShadeModel(GL_FLAT);  // restore default for subsequent drawing
 }
 
-// Draw subtle edge wireframe for dice shape definition
+// Draw subtle white wireframe edges on the die for shape definition.
+// These thin lines help the eye perceive the die's geometry, especially
+// on faces that are similarly lit.  Lines are offset slightly toward the
+// camera to prevent "Z-fighting" (flickering where the line and face
+// occupy the exact same depth).
 void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
@@ -436,8 +712,26 @@ void DrawDieEdges(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Geometry-based bloom
+// Geometry-based bloom (specular glow halos)
 // ═══════════════════════════════════════════════════════════════════
+//
+// WHAT IS BLOOM?
+//
+//   In real cameras, very bright light "bleeds" into surrounding pixels
+//   due to lens imperfections, creating a soft glow around bright spots.
+//   This is called BLOOM.  It makes highlights look more intense and
+//   gives a cinematic feel.
+//
+// OUR APPROACH:
+//
+//   For each face with a strong specular highlight, we draw a slightly
+//   enlarged, transparent copy of the face on top.  This creates a
+//   glow halo around the highlight.  Only faces above a brightness
+//   threshold (0.15) get bloom — otherwise we'd waste cycles on
+//   invisible effects.
+//
+//   Gated behind enablePostProcess flag (off by default on MMF due to
+//   low framerate).
 
 void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
@@ -482,8 +776,23 @@ void DrawDieBloom(const ActiveDie& d, Matrix xform, Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Planar floor reflections
+// Planar floor reflections (mirror-like hardwood)
 // ═══════════════════════════════════════════════════════════════════
+//
+// HOW PLANAR REFLECTIONS WORK:
+//
+//   The simplest way to fake a reflective floor: draw the entire scene
+//   a second time, but FLIPPED upside down (Y-axis mirrored).  This
+//   creates a mirror image "below" the floor surface.
+//
+//   We draw the reflected dice with low alpha (transparency) so they
+//   look like faint reflections on a glossy surface, not a second set
+//   of dice.  Dice closer to the floor have stronger reflections
+//   (just like in real life).
+//
+//   The Y-FLIP inverts the winding order of triangles (clockwise
+//   becomes counter-clockwise), so we reverse the backface culling
+//   check to compensate.
 
 void DrawFloorReflections(Vector3 camPos) {
     if (numDice == 0) return;
@@ -568,14 +877,42 @@ void DrawFloorReflections(Vector3 camPos) {
     glShadeModel(GL_SMOOTH);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// Pre-baked floor texture with lighting
+// ═══════════════════════════════════════════════════════════════════
+//
+// OFFLINE TEXTURE BAKING explained:
+//
+//   Instead of computing floor lighting every frame (expensive on MMF),
+//   we "bake" it once at startup.  We take the raw hardwood diffuse
+//   texture, apply bump mapping, specular highlights, and environment
+//   lighting, then save the result as a single texture.  At runtime,
+//   drawing the floor is just one textured quad — almost free!
+//
+//   This is a very common game optimization: pre-compute expensive
+//   lighting offline, store the result, and draw it cheaply at runtime.
+//
+// SKY PROBES:
+//
+//   We extract the 6 brightest light directions from the skybox image
+//   (splitting it into a 6×3 grid, picking the 2 brightest columns per
+//   row).  These "probes" approximate the environment lighting without
+//   the cost of full Spherical Harmonics evaluation at every texel.
+//
+// ═══════════════════════════════════════════════════════════════════
+
 static Texture2D bakedFloorTex;  // the single pre-lit texture used at runtime
 
-// Simplified irradiance probe: dominant light directions extracted from skybox
+// Simplified irradiance probe: dominant light directions extracted from skybox.
+// Each probe stores a direction (where the light comes from) and its RGB color.
 #define NUM_SKY_PROBES 6
 struct SkyProbe { Vector3 dir; float r, g, b; };
 static SkyProbe skyProbes[NUM_SKY_PROBES];
 static int numSkyProbes = 0;
 
+// Build sky probes by analyzing the skybox image.
+// Splits the skybox into a 6-column × 3-row grid, finds the 2 brightest
+// columns per row (by luminance), and creates directional probes from them.
 static void BuildSkyProbes(const char* skyboxPath) {
     Image sky = LoadImage(skyboxPath);
     if (sky.data == NULL) return;
@@ -642,7 +979,9 @@ static void BuildSkyProbes(const char* skyboxPath) {
     TraceLog(LOG_INFO, "SKY: Built %d irradiance probes from skybox", probeIdx);
 }
 
-// Sample a grayscale image at UV with tiling, returning 0..1
+// Sample a grayscale image at UV coordinates, returning 0.0 to 1.0.
+// UVs are "tiled" (wrapped): e.g., u=1.5 is treated as u=0.5.
+// Used for bump map and roughness map sampling.
 static float SampleGray(Image* img, float u, float v) {
     if (img->data == NULL) return 0.5f;
     u = u - floorf(u); v = v - floorf(v);
@@ -653,25 +992,49 @@ static float SampleGray(Image* img, float u, float v) {
     return ((unsigned char*)img->data)[py * img->width + px] / 255.0f;
 }
 
-// Compute bump normal from finite-difference height sampling
+// Compute a bump-mapped surface normal from a height/bump map.
+//
+// BUMP MAPPING explained:
+//   A bump map is a grayscale image where brightness = "height".
+//   We sample 3 nearby points and compute finite differences (slopes)
+//   to figure out which way the surface tilts at this point.
+//   This tilted normal makes flat geometry appear to have 3D detail
+//   (bumps, grooves, cracks) when lit.
+//
+//   The "scale" parameter controls how pronounced the bumps appear.
+//   Higher values = more dramatic bumps.
 static Vector3 BumpNormal(Image* bumpImg, float bumpMin, float bumpRange,
                           float u, float v, float texelSize) {
-    // Sample 3 points for finite-difference normal
+    // Sample 3 heights: center, +U, +V (finite difference method)
     float hc = (SampleGray(bumpImg, u, v)         - bumpMin) / bumpRange;
     float hx = (SampleGray(bumpImg, u + texelSize, v) - bumpMin) / bumpRange;
     float hy = (SampleGray(bumpImg, u, v + texelSize)  - bumpMin) / bumpRange;
-    // Tangent-space normal: dh/du and dh/dv become X and Z tilts
+    // Tangent-space normal: slopes in U and V become X and Z tilts.
+    // Y=1.0 keeps the normal mostly pointing "up" (the floor's base direction).
     float scale = 2.5f;  // bump strength
     Vector3 n = {-(hx - hc) * scale, 1.0f, -(hy - hc) * scale};
     return Vector3Normalize(n);
 }
 
-// Bake a fully-lit floor texture: diffuse × (bump_lighting + specular + IBL)
-// This runs once at init; at runtime we just draw a textured quad.
+// Bake a fully-lit floor texture offline.
+//
+// For every texel, we:
+//   1. Read the diffuse color (wood grain)
+//   2. Compute a bump-perturbed surface normal
+//   3. Read the roughness value (glossy vs matte)
+//   4. Light the texel: ambient + directional (key/fill) + sky probes
+//   5. Add specular highlights (Blinn-Phong, strength varies with glossiness)
+//   6. Output the final lit color
+//
+// The result is a single RGBA texture that captures all lighting detail.
+// At runtime, we just draw a textured quad — no per-pixel lighting needed.
 static void BakeLitFloorTexture(Image diffuseImg, Image bumpImg, Image roughImg) {
     int W = diffuseImg.width, H = diffuseImg.height;
 
-    // Normalize bump range for maximum contrast
+    // Normalize bump range for maximum contrast.
+    // Find the darkest and brightest values in the bump map, then
+    // remap all heights to 0..1 within that range.  This maximizes
+    // the visible bump effect regardless of the original image's range.
     float bumpLo = 1.0f, bumpHi = 0.0f;
     if (bumpImg.data) {
         unsigned char* bp = (unsigned char*)bumpImg.data;
@@ -780,6 +1143,13 @@ static void BakeLitFloorTexture(Image diffuseImg, Image bumpImg, Image roughImg)
     TraceLog(LOG_INFO, "BAKE: Lit floor texture %dx%d ready", W, H);
 }
 
+// Master initialization: load all floor materials, MatCap, SH, and bake.
+// Called once at startup.  Loads:
+//   - MatCap texture (for dice environment reflections)
+//   - Skybox → SH coefficients (for dice diffuse IBL)
+//   - Skybox → sky probes (for floor environment lighting)
+//   - Hardwood diffuse, bump, and roughness maps (for floor baking)
+// Falls back to a solid brown color if diffuse texture is missing.
 void InitWoodTexture() {
     LoadMatCap("matcap.png");
     ProjectSkyboxToSH("skybox.png");
@@ -802,6 +1172,10 @@ void InitWoodTexture() {
     if (rough.data) UnloadImage(rough);
 }
 
+// Draw the floor as a simple textured quad.
+// All lighting is pre-baked into bakedFloorTex — we just need to draw
+// two triangles with texture coordinates.  tileRepeat controls how many
+// times the texture repeats across the floor (higher = smaller planks).
 void DrawTexturedGround(float halfSize, float tileRepeat) {
     // Simple textured quad — all lighting is pre-baked into the texture
     rlSetTexture(bakedFloorTex.id);
@@ -821,12 +1195,29 @@ void DrawTexturedGround(float halfSize, float tileRepeat) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Skybox
+// Skybox (cylindrical panoramic background)
+// ═══════════════════════════════════════════════════════════════════
+//
+// WHAT IS A SKYBOX?
+//
+//   A skybox is a large shape that surrounds the entire scene, textured
+//   with an environment image so it looks like a real background (sky,
+//   studio, landscape).  The camera sits inside it.
+//
+// OUR APPROACH:
+//
+//   We use a CYLINDER (not a cube) because our skybox image is a
+//   360° equirectangular panorama — it maps naturally onto a cylinder.
+//   16 vertical segments approximate the circle.  The cylinder follows
+//   the camera position so you can never "walk to the edge."
+//
+//   Depth writing is disabled so the skybox is always behind everything.
 // ═══════════════════════════════════════════════════════════════════
 
 static Texture2D skyboxTex;
 static bool skyboxLoaded = false;
 
+// Load the skybox panorama image and upload to GPU texture.
 void InitSkybox() {
     Image img = LoadImage("skybox.png");
     if (img.data != NULL) {
@@ -836,6 +1227,9 @@ void InitSkybox() {
     }
 }
 
+// Draw the skybox cylinder centered on the camera.
+// Each of the 16 segments is a vertical quad (2 triangles).
+// U texture coordinate maps 0→1 around the 360° panorama.
 void DrawSkybox(Vector3 camPos) {
     if (!skyboxLoaded) return;
 
@@ -876,7 +1270,27 @@ void DrawSkybox(Vector3 camPos) {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Number atlas + decals
+// Number atlas + face decals
+// ═══════════════════════════════════════════════════════════════════
+//
+// TEXTURE ATLAS explained:
+//
+//   Drawing each number as a separate texture would require many
+//   texture switches (slow).  Instead, we pack ALL numbers (0–20) into
+//   one big texture called an ATLAS.  Each number occupies a grid cell.
+//   When we need number "7", we compute its UV rectangle in the atlas.
+//
+//   Layout: 4 columns × 6 rows in a 256×256 texture.
+//   Each cell is 64×42 pixels.
+//
+// FACE DECALS:
+//
+//   To show numbers on dice faces, we draw a tiny textured quad
+//   (2 triangles) floating just above (+0.005) each face.  The quad
+//   is aligned to the face using its tangent vectors (computed from
+//   the first edge + cross product with the face normal).
+//   Only front-facing faces (dot > 0.1 toward camera) get decals,
+//   since back-facing numbers would be invisible anyway.
 // ═══════════════════════════════════════════════════════════════════
 
 #define ATLAS_COLS 4
@@ -887,6 +1301,9 @@ void DrawSkybox(Vector3 camPos) {
 
 static Texture2D numberAtlas;
 
+// Generate the number atlas at startup.
+// Renders numbers 0–20 into a grid using raylib's CPU text rendering.
+// Each number is drawn 3 times with slight offsets for a bold/shadow effect.
 void InitNumberAtlas() {
     Image img = GenImageColor(ATLAS_SIZE, ATLAS_SIZE, BLANK);
     for (int n = 0; n <= 20; n++) {
@@ -908,6 +1325,7 @@ void InitNumberAtlas() {
     UnloadImage(img);
 }
 
+// Look up UV coordinates for a given number in the atlas grid.
 static void GetNumberUV(int value, float* u0, float* v0, float* u1, float* v1) {
     int col = value % ATLAS_COLS, row = value / ATLAS_COLS;
     *u0 = (float)(col * ATLAS_CELL_W) / ATLAS_SIZE;
@@ -916,6 +1334,13 @@ static void GetNumberUV(int value, float* u0, float* v0, float* u1, float* v1) {
     *v1 = (float)((row + 1) * ATLAS_CELL_H) / ATLAS_SIZE;
 }
 
+// Draw number decals on all visible faces of a die.
+// For each face with a valid number (value >= 0):
+//   1. Compute face center and normal (in world space)
+//   2. Backface cull: skip if facing away from camera
+//   3. Build a tangent frame (t1, t2) aligned to the face
+//   4. Place a small quad slightly above the face surface
+//   5. Draw 2 textured triangles with atlas UVs for the number
 void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos) {
     Vector3 wv[MAX_DIE_VERTS];
     for (int i = 0; i < d.numVerts; i++)
@@ -974,8 +1399,29 @@ void DrawDieNumberDecals(const ActiveDie& d, const Matrix& xform, Vector3 camPos
 // ═══════════════════════════════════════════════════════════════════
 // Screen-space bloom post-processing (via TinyGL glPostProcess)
 // ═══════════════════════════════════════════════════════════════════
+//
+// SCREEN-SPACE POST-PROCESSING explained:
+//
+//   After the entire scene is rendered, we can modify the final image
+//   pixel-by-pixel.  TinyGL provides glPostProcess() which calls a
+//   callback for every pixel with its color and depth.
+//
+// OUR EFFECTS:
+//
+//   1. BLOOM: Pixels above 80% brightness get a subtle boost (up to
+//      1.4×).  This simulates camera lens bloom — bright highlights
+//      "glow."  (Note: true bloom would blur the glow outward, but
+//      per-pixel-only processing can't do spatial blur.)
+//
+//   2. DEPTH FOG: Distant pixels (z > 60% of depth range) fade toward
+//      a warm haze color (160, 155, 150).  Max 15% blend — very subtle,
+//      just adds a hint of atmosphere/distance.
+//
+// PIXEL FORMAT: TinyGL packs 32-bit color as 0x00RRGGBB.
+//               z is 16-bit depth: 0 = far, 0xFFFF = near.
+// ═══════════════════════════════════════════════════════════════════
 
-// Bloom + depth fog post-processing
+// Per-pixel post-processing callback.
 // TinyGL 32-bit pixel format: 0x00RRGGBB, z is 16-bit depth
 static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort z) {
     unsigned int r = (pixel >> 16) & 0xFF;
@@ -1012,21 +1458,36 @@ static GLuint BloomPostProcessCallback(GLint x, GLint y, GLuint pixel, GLushort 
 
 bool enablePostProcess = false;  // off by default — bloom is blocky on MMF
 
+// Apply bloom + fog to the entire framebuffer.
+// Only runs if enablePostProcess is true (toggle with gamepad).
 void ApplyBloomPostProcess() {
     if (!enablePostProcess) return;
     glPostProcess(BloomPostProcessCallback);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// UI
+// UI (2D overlay — drawn after all 3D content)
+// ═══════════════════════════════════════════════════════════════════
+//
+// The UI is drawn in 2D screen space (pixel coordinates) on top of
+// the 3D scene.  It includes:
+//   - A "hotbar" at the bottom showing all dice types and their counts
+//   - Control hints below the hotbar
+//   - Result text (dice values) at the top (drawn in main.cpp)
 // ═══════════════════════════════════════════════════════════════════
 
+// Draw text with a subtle bold/shadow effect.
+// We draw the same text 3 times with 1-pixel offsets — cheap "bold."
 void DrawTextBold(const char* text, int x, int y, int sz, Color col) {
     DrawText(text, x+1, y, sz, col);
     DrawText(text, x, y+1, sz, col);
     DrawText(text, x, y, sz, col);
 }
 
+// Draw the dice selection hotbar at the bottom of the screen.
+// Shows all 6 dice types (d4, d6, d8, d10, d12, d20) as cells.
+// The selected cell is highlighted with a yellow border.
+// Cells showing "d6 x3" mean 3 d6 dice are queued to throw.
 void DrawHotbar() {
     const int cellW = 110, cellH = 38;
     const int totalW = NUM_DICE_TYPES * cellW;
@@ -1068,6 +1529,8 @@ void DrawHotbar() {
              riggedValue >= 0 ? (Color){200, 100, 100, 255} : (Color){120, 120, 120, 255});
 }
 
+// Free all GPU textures and CPU allocations.
+// Called during shutdown to prevent resource leaks.
 void UnloadRenderingTextures() {
     UnloadTexture(numberAtlas);
     if (skyboxLoaded) UnloadTexture(skyboxTex);
