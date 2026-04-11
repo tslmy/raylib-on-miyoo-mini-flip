@@ -1,8 +1,8 @@
-# Porting Raylib to Miyoo Mini Flip
+# 3D Dice Roller for Miyoo Mini Flip
 
 A **dice roller** for [Miyoo Mini Flip (MMF)][mm] running OnionOS — powered by [Raylib][rl], [TinyGL][tgl] software rendering, and [Bullet3][bt] rigid-body physics.
 
-<img width="412" height="214" alt="View recent photos" src="https://github.com/user-attachments/assets/6051c1dd-505c-43e1-9006-153cb38fe3a1" />
+![ezgif-4770a00bd5f0ac65](https://github.com/user-attachments/assets/76701be8-d951-4c7b-9089-5a895212c172)
 
 _(Video demo [here](https://www.youtube.com/watch?v=O7Q57MJNzG0))_
 
