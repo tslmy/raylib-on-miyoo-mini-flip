@@ -1,12 +1,14 @@
-# Raylib + Bullet3 on Miyoo Mini Flip
+# 3D Dice Roller for Miyoo Mini Flip
 
 A **dice roller** for [Miyoo Mini Flip (MMF)][mm] running OnionOS — powered by [Raylib][rl], [TinyGL][tgl] software rendering, and [Bullet3][bt] rigid-body physics.
+
+![ezgif-4770a00bd5f0ac65](https://github.com/user-attachments/assets/76701be8-d951-4c7b-9089-5a895212c172)
+
+_(Video demo [here](https://www.youtube.com/watch?v=O7Q57MJNzG0))_
 
 Supports all standard polyhedral dice: **d4**, **d6**, **d8**, **d10**, **d12**, **d20**. Each die falls with realistic physics (gravity, bouncing, friction) and the rolled value is detected automatically once the die settles.
 
 Use the **hot bar** at the bottom of the screen to configure your throw: select a dice type with L2/R2, adjust the count with Y/X (up to 12 dice total), then press A to throw them all at once. Dice are colored with random pastel shades.
-
-<img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
 
 This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
 
