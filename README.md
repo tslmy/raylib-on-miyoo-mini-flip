@@ -107,10 +107,13 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 - Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
 - **Controls**:
   - **A**: Throw all configured dice
-  - **L2 / R2**: Select dice type on the hot bar
-  - **Y / X**: Increase / decrease count of the selected dice type
-  - **D-Pad**: Orbit camera
-  - **L1 / R1**: Zoom in / out
-  - **Menu** or **Power**: Quit
+  - **D-Pad Left / Right**: Select dice type on the hot bar
+  - **D-Pad Up / Down**: Increase / decrease count of the selected dice type
+  - **L1 / R1**: Rotate camera horizontally
+  - **L2 / R2**: Zoom in / out
+  - **Y / X**: Tilt camera up / down
+  - **SELECT + D-Pad / Y / X**: Pan camera
+  - **START + D-Pad / Y / X**: Freelook (turn view direction)
+  - **SELECT** or **START** (tap alone): Toggle help overlay
 
 [bt]: https://github.com/bulletphysics/bullet3
