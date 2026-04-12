@@ -4,19 +4,18 @@ A **dice roller** for [Miyoo Mini Flip (MMF)][mm] running OnionOS — powered by
 
 ![ezgif-4770a00bd5f0ac65](https://github.com/user-attachments/assets/76701be8-d951-4c7b-9089-5a895212c172)
 
-_(Video demo [here](https://www.youtube.com/watch?v=O7Q57MJNzG0))_
+_([A longer video demo](https://www.youtube.com/watch?v=O7Q57MJNzG0))_
 
 Supports all standard polyhedral dice: **d4**, **d6**, **d8**, **d10**, **d12**, **d20**. Each die falls with realistic physics (gravity, bouncing, friction) and the rolled value is detected automatically once the die settles.
 
-Use the **hot bar** at the bottom of the screen to configure your throw: select a dice type with L2/R2, adjust the count with Y/X (up to 12 dice total), then press A to throw them all at once. Dice are colored with random pastel shades.
-
-This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
-
-- Docker-based armv7 toolchain
-- Sysroot copied from the device to avoid glibc mismatches
+> [!NOTE]
+> **Gives you deja vu?** Yes, this is a port. [The original edition][js] was written in JavaScript for my [TTRPG][tt] chatbot, [Cocai][cc].
 
 [rl]: https://www.raylib.com/
 [mm]: https://lomiyoo.com/products/miyoo-mini-flip
+[js]: https://github.com/StarsRail/Cocai/blob/46afecabdfa16f1b95d40bffa30501f3702d6a53/public/dice/dice.js
+[tt]: https://en.wikipedia.org/wiki/Tabletop_role-playing_game
+[cc]: https://github.com/StarsRail/Cocai
 
 ## Quick start
 
@@ -43,6 +42,20 @@ just deploy <mmf-host>
 The app will install to `/mnt/SDCARD/App/raylib-cube` and show up in the OnionOS Apps list.
 
 Alternatively, you can test locally from your computer by executing `just try`, which will take a screenshot after running the program for a given number of frames in an emulated ARM Docker. The screenshot will be saved to `dist/screenshot.png` and opened with your default image viewer.
+
+## Usage
+
+Use the **hot bar** at the bottom of the screen to configure your throw: select a dice type with ⬅️/➡️, adjust the count with ⬆️/⬇️ (up to 12 dice total), then press A to throw them all at once. Dice are colored with random pastel shades.
+
+Camera controls:
+
+- **L1 / R1**: Rotate camera horizontally
+- **L2 / R2**: Zoom in / out
+- **Y / X**: Tilt camera up / down
+- **SELECT + D-Pad / Y / X**: Pan camera
+- **START + D-Pad / Y / X**: Freelook (turn view direction)
+
+When in doubt, tap **SELECT** or **START** once to toggle help overlay.
 
 ## How It Works
 
@@ -103,17 +116,13 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 ## Notes
 
-- This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
-- Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
-- **Controls**:
-  - **A**: Throw all configured dice
-  - **D-Pad Left / Right**: Select dice type on the hot bar
-  - **D-Pad Up / Down**: Increase / decrease count of the selected dice type
-  - **L1 / R1**: Rotate camera horizontally
-  - **L2 / R2**: Zoom in / out
-  - **Y / X**: Tilt camera up / down
-  - **SELECT + D-Pad / Y / X**: Pan camera
-  - **START + D-Pad / Y / X**: Freelook (turn view direction)
-  - **SELECT** or **START** (tap alone): Toggle help overlay
+This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
+
+- Docker-based armv7 toolchain
+- Sysroot copied from the device to avoid glibc mismatches
+
+This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
+
+Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
 
 [bt]: https://github.com/bulletphysics/bullet3
