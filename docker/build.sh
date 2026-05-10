@@ -18,6 +18,7 @@ PLATFORM="${RAYLIB_PLATFORM:-PLATFORM_MEMORY}"
 GRAPHICS="${RAYLIB_GRAPHICS:-GRAPHICS_API_OPENGL_11}"
 
 TINYGL_DIR=/build/src/third_party/tinygl
+BULLET_DIR=/build/src/third_party/bullet3
 MMF_ARCH_FLAGS="-march=armv7-a -mfpu=neon-vfpv4"
 
 # ---------- Build TinyGL ----------
@@ -30,6 +31,16 @@ for obj in $TINYGL_OBJS; do
   $CC -Wall -O3 -std=c99 -pedantic -DNDEBUG -fno-stack-protector $MMF_ARCH_FLAGS -Wno-unused-function -I"$TINYGL_DIR/include" -c "$src" -o "$TINYGL_DIR/src/$obj"
 done
 (cd "$TINYGL_DIR/src" && rm -f libTinyGL.a && $AR rcs libTinyGL.a $TINYGL_OBJS)
+
+# ---------- Build Bullet3 (unity build) ----------
+echo "------ Building Bullet3 ------"
+BULLET_BUILD_DIR="$BULLET_DIR/build_mmf"
+mkdir -p "$BULLET_BUILD_DIR"
+BULLET_CXXFLAGS="-O2 -fno-stack-protector -DNDEBUG -DBT_NO_PROFILE $MMF_ARCH_FLAGS -I$BULLET_DIR/src"
+$CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btLinearMathAll.cpp"      -o "$BULLET_BUILD_DIR/btLinearMathAll.o"
+$CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btBulletCollisionAll.cpp" -o "$BULLET_BUILD_DIR/btBulletCollisionAll.o"
+$CXX $BULLET_CXXFLAGS -c "$BULLET_DIR/src/btBulletDynamicsAll.cpp"  -o "$BULLET_BUILD_DIR/btBulletDynamicsAll.o"
+(cd "$BULLET_BUILD_DIR" && rm -f libBullet.a && $AR rcs libBullet.a btLinearMathAll.o btBulletCollisionAll.o btBulletDynamicsAll.o)
 
 # ---------- Build raylib ----------
 cd "$RAYLIB_DIR/src"
@@ -67,10 +78,10 @@ done
 
 # Compile with MMF headers; keep code size down via section garbage collection.
 # Pass the same arch flags as the raylib build so the ABI matches.
-CFLAGS="-I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
+CFLAGS="-I$RAYLIB_DIR/src -I$TINYGL_DIR/include -I$BULLET_DIR/src -I/usr/include -I/usr/include/arm-linux-gnueabihf -O2 -ffunction-sections -fdata-sections -fno-stack-protector $MMF_ARCH_FLAGS"
 # Link against the MMF sysroot to keep glibc compatibility.
 LDFLAGS="--sysroot=$SYSROOT $SYSROOT_LDFLAGS -Wl,--gc-sections $RPATH_LINKS"
-LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src"
+LDFLAGS="$LDFLAGS -L$RAYLIB_DIR/src -L$TINYGL_DIR/src -L$BULLET_BUILD_DIR"
 
 mkdir -p "$OUT_DIR"
 
@@ -83,7 +94,7 @@ $CXX -o "$OUT_DIR/raylib-cube" \
   "$OUT_DIR/main.o" \
   "$OUT_DIR/stat_shim.o" \
   $LDFLAGS \
-  -Wl,--start-group -lraylib -lTinyGL "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
+  -Wl,--start-group -lraylib -lTinyGL -lBullet "$OUT_DIR/tinygl_stubs.o" -Wl,--end-group \
   -lm -lpthread -ldl -lc -lgcc_s -lgcc -lstdc++
 
 # Build evdev probe tool (standalone, no raylib dependency).

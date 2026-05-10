@@ -1,10 +1,12 @@
-#include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <ctime>
 #include "raylib.h"
 #include "rlgl.h"
 #include "raymath.h"
+#include "btBulletDynamicsCommon.h"
 
 // MMF button → raylib key mapping (after evdev translation in rcore_memory.c):
 //   D-Pad: KEY_UP(265) KEY_DOWN(264) KEY_LEFT(263) KEY_RIGHT(262)
@@ -20,6 +22,90 @@
 #define MMF_L1          69   // KEY_E
 #define MMF_R1          84   // KEY_T
 
+static float RandF(float lo, float hi) {
+    return lo + (hi - lo) * ((float)rand() / (float)RAND_MAX);
+}
+
+// Bullet3 world objects
+static btDiscreteDynamicsWorld* world;
+static btRigidBody* cubeBody;
+static btRigidBody* floorBody;
+static btDefaultCollisionConfiguration* collisionConfig;
+static btCollisionDispatcher* dispatcher;
+static btDbvtBroadphase* broadphase;
+static btSequentialImpulseConstraintSolver* solver;
+
+static void InitPhysics() {
+    collisionConfig = new btDefaultCollisionConfiguration();
+    dispatcher = new btCollisionDispatcher(collisionConfig);
+    broadphase = new btDbvtBroadphase();
+    solver = new btSequentialImpulseConstraintSolver();
+    world = new btDiscreteDynamicsWorld(dispatcher, broadphase, solver, collisionConfig);
+    world->setGravity(btVector3(0, -9.81f, 0));
+
+    // Floor (static infinite plane at y=0)
+    btStaticPlaneShape* floorShape = new btStaticPlaneShape(btVector3(0, 1, 0), 0);
+    btDefaultMotionState* floorMotion = new btDefaultMotionState();
+    btRigidBody::btRigidBodyConstructionInfo floorCI(0, floorMotion, floorShape);
+    floorCI.m_restitution = 0.5f;
+    floorCI.m_friction = 0.8f;
+    floorBody = new btRigidBody(floorCI);
+    world->addRigidBody(floorBody);
+}
+
+static void ResetCube() {
+    // Remove existing cube if any
+    if (cubeBody) {
+        world->removeRigidBody(cubeBody);
+        delete cubeBody->getMotionState();
+        delete cubeBody;
+        cubeBody = nullptr;
+    }
+
+    float halfSize = 0.6f;
+    btBoxShape* cubeShape = new btBoxShape(btVector3(halfSize, halfSize, halfSize));
+
+    btScalar mass = 1.0f;
+    btVector3 inertia;
+    cubeShape->calculateLocalInertia(mass, inertia);
+
+    // Random orientation
+    btQuaternion rot;
+    rot.setEulerZYX(RandF(0, 6.28f), RandF(0, 6.28f), RandF(0, 6.28f));
+
+    btTransform startTransform;
+    startTransform.setIdentity();
+    startTransform.setOrigin(btVector3(0, 6.0f, 0));
+    startTransform.setRotation(rot);
+
+    btDefaultMotionState* motionState = new btDefaultMotionState(startTransform);
+    btRigidBody::btRigidBodyConstructionInfo ci(mass, motionState, cubeShape, inertia);
+    ci.m_restitution = 0.4f;
+    ci.m_friction = 0.6f;
+
+    cubeBody = new btRigidBody(ci);
+    cubeBody->setAngularVelocity(btVector3(RandF(-5, 5), RandF(-5, 5), RandF(-5, 5)));
+    world->addRigidBody(cubeBody);
+}
+
+static void CleanupPhysics() {
+    if (cubeBody) {
+        world->removeRigidBody(cubeBody);
+        delete cubeBody->getMotionState();
+        delete cubeBody->getCollisionShape();
+        delete cubeBody;
+    }
+    world->removeRigidBody(floorBody);
+    delete floorBody->getMotionState();
+    delete floorBody->getCollisionShape();
+    delete floorBody;
+    delete world;
+    delete solver;
+    delete broadphase;
+    delete dispatcher;
+    delete collisionConfig;
+}
+
 int main(int argc, char **argv) {
     // --screenshot N: run N frames headlessly, save screenshot.png, exit
     int screenshotFrames = 0;
@@ -29,15 +115,18 @@ int main(int argc, char **argv) {
             screenshotFrames = atoi(argv[++i]);
     }
 
-    // Request a size close to the MMF panel; InitPlatform() will override this
-    // to match the actual framebuffer (640x480 on device).
+    srand((unsigned)time(nullptr));
+
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
-    InitWindow(640, 480, "Raylib Cube - MMF");
+    InitWindow(640, 480, "Bullet3 Cube - MMF");
 
     // Pick up the real render dimensions set by InitPlatform() / fb0 probe.
     const int screenWidth  = GetRenderWidth();
     const int screenHeight = GetRenderHeight();
     SetTargetFPS(30);
+
+    InitPhysics();
+    ResetCube();
 
     // Orbit camera state
     float camDist = 5.0f;
@@ -56,7 +145,7 @@ int main(int argc, char **argv) {
     camera.fovy = 45.0f;
     camera.projection = CAMERA_PERSPECTIVE;
 
-    float rotation = 0.0f;
+    // Cube mesh data (same as before)
     const float cubeSize = 1.2f;
     const float half = cubeSize * 0.5f;
     const Vector3 baseVerts[8] = {
@@ -103,18 +192,24 @@ int main(int argc, char **argv) {
 
     while (!WindowShouldClose()) {
         float dt = GetFrameTime();
-        rotation += 60.0f * dt;
-        if (rotation > 360.0f) rotation -= 360.0f;
 
-        // Camera control: D-Pad orbits, L1/R1 zoom, A resets
+        // Step physics
+        if (dt > 0 && dt < 0.1f)
+            world->stepSimulation(dt, 4, 1.0f/120.0f);
+
+        // Camera control
         if (IsKeyDown(MMF_DPAD_LEFT))  camYaw   -= CAM_ORBIT_SPEED * dt;
         if (IsKeyDown(MMF_DPAD_RIGHT)) camYaw   += CAM_ORBIT_SPEED * dt;
         if (IsKeyDown(MMF_DPAD_UP))    camPitch += CAM_ORBIT_SPEED * dt;
         if (IsKeyDown(MMF_DPAD_DOWN))  camPitch -= CAM_ORBIT_SPEED * dt;
         if (IsKeyDown(MMF_L1))         camDist  -= CAM_ZOOM_SPEED * dt;
         if (IsKeyDown(MMF_R1))         camDist  += CAM_ZOOM_SPEED * dt;
+        if (IsKeyPressed(MMF_A))       ResetCube(); // Re-throw
 
-        if (IsKeyPressed(MMF_A)) { camDist = 5.0f; camYaw = 45.0f; camPitch = 30.0f; }
+        if (camPitch > 85.0f) camPitch = 85.0f;
+        if (camPitch < -10.0f) camPitch = -10.0f;
+        if (camDist < 3.0f) camDist = 3.0f;
+        if (camDist > 25.0f) camDist = 25.0f;
 
         // Clamp
         if (camPitch > CAM_PITCH_MAX) camPitch = CAM_PITCH_MAX;
@@ -130,28 +225,38 @@ int main(int argc, char **argv) {
             camDist * sinf(pitchRad),
             camDist * cosf(pitchRad) * cosf(yawRad),
         };
-        camera.target = (Vector3){ 0.0f, 0.0f, 0.0f };
+        camera.target = (Vector3){ 0.0f, 1.0f, 0.0f };
+
+        // Get cube transform from Bullet (column-major float[16])
+        float m[16];
+        cubeBody->getWorldTransform().getOpenGLMatrix(m);
+        // Raylib's Matrix struct is {m0,m4,m8,m12, m1,m5,m9,m13, ...}
+        // in memory — NOT sequential. Must map by field name, not cast.
+        Matrix cubeTransform = {
+            m[0], m[4], m[8],  m[12],
+            m[1], m[5], m[9],  m[13],
+            m[2], m[6], m[10], m[14],
+            m[3], m[7], m[11], m[15],
+        };
 
         BeginDrawing();
         ClearBackground((Color){ 20, 24, 30, 255 });
 
-        Vector3 verts[8];
-        Matrix rot = MatrixRotateY(rotation * DEG2RAD);
-        for (int i = 0; i < 8; i++)
-            verts[i] = Vector3Transform(baseVerts[i], rot);
-
         BeginMode3D(camera);
         rlDisableBackfaceCulling();
-        // Shaded faces
-        for (int f = 0; f < 6; f++)
-        {
-            Vector3 n = Vector3Transform(faceNormals[f], rot);
+
+        // Draw cube using physics transform
+        Vector3 verts[8];
+        for (int i = 0; i < 8; i++)
+            verts[i] = Vector3Transform(baseVerts[i], cubeTransform);
+
+        for (int f = 0; f < 6; f++) {
+            Vector3 n = Vector3Transform(faceNormals[f], cubeTransform);
+            // Remove translation from normal
+            n = Vector3Subtract(n, (Vector3){cubeTransform.m12, cubeTransform.m13, cubeTransform.m14});
             float ndotl = Vector3DotProduct(Vector3Normalize(n), lightDir);
-            if (ndotl < 0.0f)
-                ndotl = 0.0f;
+            if (ndotl < 0.0f) ndotl = 0.0f;
             float intensity = 0.2f + 0.8f * ndotl;
-            if (intensity > 1.0f)
-                intensity = 1.0f;
             Color c = {
                 (unsigned char)(0 * intensity),
                 (unsigned char)(170 * intensity),
@@ -173,8 +278,8 @@ int main(int argc, char **argv) {
         DrawGrid(10, 1.0f);
         EndMode3D();
 
-        DrawText("Raylib on MMF", 20, 20, 20, (Color){ 230, 230, 230, 255 });
-        DrawText("[D-Pad] Orbit  [L1/R1] Zoom  [A] Reset", 20, screenHeight - 30, 14, (Color){ 160, 160, 160, 255 });
+        DrawText("Bullet3 Physics on MMF", 20, 20, 20, (Color){230, 230, 230, 255});
+        DrawText("[A] Throw  [D-Pad] Orbit  [L1/R1] Zoom", 20, screenHeight - 30, 14, (Color){160, 160, 160, 255});
         if (getenv("RAYLIB_MMF_SHOWFPS") != NULL)
             DrawFPS(20, 50);
         EndDrawing();
@@ -189,6 +294,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    CleanupPhysics();
     CloseWindow();
     return 0;
 }

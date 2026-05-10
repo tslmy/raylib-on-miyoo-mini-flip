@@ -1,6 +1,6 @@
 {
-  "label": "Raylib Cube",
+  "label": "Raylib Cube with physics",
   "icon": "icon.png",
   "launch": "launch.sh",
-  "description": "Simple 3D spinning cube demo"
+  "description": "A cube tossed mid-air bounces on the floor."
 }

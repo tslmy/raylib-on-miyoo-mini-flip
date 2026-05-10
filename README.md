@@ -1,8 +1,8 @@
-# Porting Raylib to Miyoo Mini Flip
+# Raylib + Bullet3 on Miyoo Mini Flip
 
-A tiny [Raylib][rl] 3D demo (spinning cube) for [Miyoo Mini Flip (MMF)][mm] running OnionOS.
+A tiny [Raylib][rl] 3D demo for [Miyoo Mini Flip (MMF)][mm] running OnionOS — a cube free-falls with [Bullet3][bt] rigid body physics, bouncing off a floor plane.
 
-<img width="614" height="453" alt="image" src="https://github.com/user-attachments/assets/5052dc45-fb43-47a0-b084-1252678eeae3" />
+![demo](https://github.com/user-attachments/assets/6271ccba-de3f-450d-8478-33217ffe0ceb)
 
 This repo is designed to reuse the same cross-compile approach I used in [`hmbrg`](https://github.com/tslmy/hmbrg):
 
@@ -84,12 +84,13 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 ## Repo layout
 
-- `src/main.cpp`: Demo program (spinning cube with orbit camera control)
+- `src/main.cpp`: Demo program (physics cube with Bullet3 + orbit camera control)
 - `src/tinygl_stubs.c`: GL functions missing from TinyGL that Raylib requires
 - `src/evdev_probe.c`: Diagnostic tool to verify MMF button→evdev keycodes on device
 - `docker/`: Cross-compile toolchain
 - `third_party/raylib`: Raylib fork (`tslmy/raylib`, branch `mmf`)
 - `third_party/tinygl`: TinyGL fork (`tslmy/tinygl`, branch `mmf`)
+- `third_party/bullet3`: [Bullet3][bt] physics engine (v3.25, unity build — no CMake needed)
 - `assets/launch.sh`: Device launcher script
 - `assets/config.json`: OnionOS App metadata
 - `docs/raylib-port-notes.md`: Porting research notes
@@ -98,4 +99,6 @@ TinyGL renders (ARGB) → MMA buffer → MI GFX blit → /dev/fb0
 
 - This project assumes `armv7-unknown-linux-gnueabihf` (armhf) and MMF's stock libc.
 - Raylib is linked **statically** by default to reduce runtime dependencies on MMF.
-- **Controls**: D-Pad orbits the camera, L1/R1 zooms in/out, A resets the view. Menu or Power quits.
+- **Controls**: D-Pad orbits the camera, L1/R1 zooms in/out, A re-throws the cube. Menu or Power quits.
+
+[bt]: https://github.com/bulletphysics/bullet3
