@@ -80,4 +80,10 @@ cp -f "$ASSETS_DIR/config.json" "$OUT_DIR/config.json"
 
 test -f "$ASSETS_DIR/icon.png" && cp -f "$ASSETS_DIR/icon.png" "$OUT_DIR/icon.png"
 
+# Bundle MI GFX libs when available (for hardware blit on MMF).
+if [ -d "$SRC_DIR/third_party/mi/lib" ]; then
+  mkdir -p "$OUT_DIR/libs"
+  cp -f "$SRC_DIR/third_party/mi/lib/"*.so "$OUT_DIR/libs/" 2>/dev/null || true
+fi
+
 echo "Build complete: $OUT_DIR/raylib-cube"
