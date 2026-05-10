@@ -70,7 +70,7 @@ The MMF sysroot lacks `libc_nonshared.a`, so `stat()` is shimmed by forwarding t
 
 ## Key Conventions
 
-- **Target**: `armv7-unknown-linux-gnueabihf` (armhf), MMF native resolution **750×560**.
+- **Target**: `armv7-unknown-linux-gnueabihf` (armhf), MMF native resolution **640×480** (virtual 640×960 for double-buffering).
 - **Static linking**: raylib is always linked statically (`RAYLIB_LIBTYPE=STATIC`). Dynamic libs are only used for system libc/libm/libpthread/libdl.
 - **Raylib build define**: `RAYLIB_MMF_FB` is passed via `CUSTOM_CFLAGS` when building raylib. Code in `rcore_memory.c` gates MMF-specific framebuffer logic on this define.
 - **Runtime env vars** (set in `assets/launch.sh`):

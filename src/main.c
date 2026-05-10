@@ -6,12 +6,14 @@
 #include "raymath.h"
 
 int main(void) {
-    // MMF native panel is 750x560; keep fullscreen.
-    const int screenWidth = 750;
-    const int screenHeight = 560;
-
+    // Request a size close to the MMF panel; InitPlatform() will override this
+    // to match the actual framebuffer (640x480 on device).
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
-    InitWindow(screenWidth, screenHeight, "Raylib Cube - MMF");
+    InitWindow(640, 480, "Raylib Cube - MMF");
+
+    // Pick up the real render dimensions set by InitPlatform() / fb0 probe.
+    const int screenWidth  = GetRenderWidth();
+    const int screenHeight = GetRenderHeight();
     SetTargetFPS(30);
 
     Camera3D camera = { 0 };
