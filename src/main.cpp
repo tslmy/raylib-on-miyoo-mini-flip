@@ -23,7 +23,7 @@
 #define MMF_R1          84   // KEY_T
 #define MMF_R2          259  // KEY_BACKSPACE
 
-static const int SCR_W = 750;
+static const int SCR_W = 752;
 static const int SCR_H = 560;
 
 static float RandF(float lo, float hi) {
@@ -829,20 +829,14 @@ static void DrawHotbar() {
 int main(int argc, char **argv) {
     // --screenshot N: run N frames headlessly, save screenshot.png, exit
     int screenshotFrames = 0;
-    int i;
-    for (i = 1; i < argc; i++) {
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--screenshot") == 0 && i + 1 < argc)
             screenshotFrames = atoi(argv[++i]);
     }
 
     srand((unsigned)time(nullptr));
     SetConfigFlags(FLAG_FULLSCREEN_MODE);
-    InitWindow(640, 480, "Dice Roller - MMF");
-
-
-    // Pick up the real render dimensions set by InitPlatform() / fb0 probe.
-    const int screenWidth  = GetRenderWidth();
-    const int screenHeight = GetRenderHeight();
+    InitWindow(SCR_W, SCR_H, "Dice Roller - MMF");
     SetTargetFPS(30);
 
     InitNumberAtlas();
