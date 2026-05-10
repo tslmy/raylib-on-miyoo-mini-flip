@@ -2,3 +2,7 @@
 	path = third_party/raylib
 	url = https://github.com/tslmy/raylib.git
 	branch = mmf
+[submodule "third_party/tinygl"]
+	path = third_party/tinygl
+	url = https://github.com/tslmy/tinygl.git
+	branch = mmf

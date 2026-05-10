@@ -6,6 +6,7 @@ export LD_LIBRARY_PATH="$(pwd)/libs:/mnt/SDCARD/.tmp_update/lib/parasyte:/custom
 echo performance > /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null || true
 
 export RAYLIB_MMF_MIGFX=1
+export RAYLIB_MMF_SCALE=0
 export RAYLIB_MMF_SHOWFPS=1
 
 ./raylib-cube > raylib-cube.log 2>&1
